@@ -696,6 +696,24 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await update.message.reply_text(f"⚠️ Не удалось отправить уведомление пользователю: {e}")
 
+async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    help_text = (
+        "🗝️ <b>Админ-команды:</b>\n\n"
+        "/add_event – добавить новое событие в календарь\n"
+        "/notify – разослать уведомление о событии по ID\n"
+        "/give_points – добавить баллы участнику по username\n"
+        "/check_points – проверить баллы участника по username\n"
+        "/search_task – посмотреть задачи (фильтры: reserved/unreserved/deadline)\n"
+        "/task_done – пометить задачу как выполненную и удалить\n"
+        # Допиши сюда другие твои админ-команды при необходимости
+    )
+    await update.message.reply_text(help_text, parse_mode="HTML")
+
 def get_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("get_task", get_task_start)],
@@ -720,6 +738,7 @@ def get_task_handler():
 app = ApplicationBuilder().token("7833612109:AAGfBTL2pn5WqDoWLwFYA1cZBd-XF7VzJ_o").build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
+app.add_handler(CommandHandler("admin_help", admin_help))
 app.add_handler(CommandHandler("add_event", add_event))
 app.add_handler(CommandHandler("notify", notify))
 app.add_handler(CommandHandler("upcoming_events", upcoming_events))
