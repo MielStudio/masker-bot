@@ -485,7 +485,7 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dt = datetime.fromisoformat(t["deadline"])
             date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
         else:
-            date_str = "Не назначен
+            date_str = "Не назначен"
         msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
                 f"📄 {t['description']}\n"
                 f"📂 Тип: {t['type']}\n"
