@@ -829,6 +829,8 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/search_task – посмотреть задачи (фильтры: reserved/unreserved/deadline)\n"
         "/task_done – пометить задачу как выполненную и удалить\n"
         "/edit_deadline – редактирование дедлайна задач участников\n"
+        "/delete_event – удалить событие по ID\n"
+        "/add_task – добавить новую задачу\n"
         # Допиши сюда другие твои админ-команды при необходимости
     )
     await update.message.reply_text(help_text, parse_mode="HTML")
@@ -900,6 +902,101 @@ async def edit_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Возникла ошибка: {e}")
 
+async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text("⚠️ Используй так: /delete_event <ID события>\nПример: /delete_event 2")
+        return
+
+    try:
+        event_id = int(context.args[0])
+        events = load_json(EVENTS_FILE)
+        event = next((e for e in events if e["id"] == event_id), None)
+
+        if not event:
+            await update.message.reply_text(f"❌ Событие с ID #{event_id} не найдено.")
+            return
+
+        events = [e for e in events if e["id"] != event_id]
+        save_json(EVENTS_FILE, events)
+
+        await update.message.reply_text(f"✅ Событие \"{event['title']}\" (ID #{event_id}) успешно удалено.")
+
+    except ValueError:
+        await update.message.reply_text("❌ ID события должен быть числом.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Произошла ошибка: {e}")
+
+async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Используй так:\n"
+            "<code>/add_task project;title;description;type;points;estimated_days</code>\n\n"
+            "Пример:\n"
+            "<code>/add_task Starky Jungle;Новая механика;Описание механики;программист;20;14</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        raw_input = " ".join(context.args)
+        parts = raw_input.split(";")
+        if len(parts) < 6:
+            raise ValueError("Недостаточно параметров")
+
+        project = parts[0].strip()
+        title = parts[1].strip()
+        description = parts[2].strip()
+        task_type = parts[3].strip()
+        points = int(parts[4].strip())
+        estimated_days = int(parts[5].strip())
+
+        tasks = load_json(TASKS_FILE)
+        new_id = max([t["id"] for t in tasks], default=0) + 1
+
+        new_task = {
+            "id": new_id,
+            "project": project,
+            "title": title,
+            "description": description,
+            "type": task_type,
+            "points": points,
+            "estimated_days": estimated_days,
+            "deadline": None,
+            "reserved_by": None
+        }
+
+        tasks.append(new_task)
+        save_json(TASKS_FILE, tasks)
+
+        await update.message.reply_text(
+            f"✅ Задача добавлена:\n\n"
+            f"<b>{title}</b>\n"
+            f"Проект: {project}\n"
+            f"Роль: {task_type}\n"
+            f"Баллы: {points}\n"
+            f"Оценка: {estimated_days} дн.",
+            parse_mode="HTML"
+        )
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
 def get_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("get_task", get_task_start)],
@@ -938,5 +1035,7 @@ app.add_handler(CommandHandler("my_task", my_task))
 app.add_handler(CommandHandler("search_task", search_task))
 app.add_handler(CommandHandler("task_done", task_done))
 app.add_handler(CommandHandler("edit_deadline", edit_deadline))
+app.add_handler(CommandHandler("delete_event", delete_event))
+app.add_handler(CommandHandler("delete_event", delete_event))
 app.add_handler(get_task_handler())
 app.run_polling()
