@@ -65,5 +65,18 @@
       "аниматор",
       "музыкант"
     ]
+  },
+  {
+    "user_id": 1886915599,
+    "username": "Puppy_boy_I",
+    "full_name": "Pavel",
+    "role": "member",
+    "points": 0,
+    "percent_rate": 0,
+    "reserved_tasks": [],
+    "roles": [
+      "cценарист",
+      "маркетолог"
+    ]
   }
 ]
