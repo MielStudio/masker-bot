@@ -125,11 +125,12 @@ async def safe_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
 async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
     events = load_json(EVENTS_FILE)
     users = load_json(USERS_FILE)
+    tasks = load_json(TASKS_FILE)
     now = datetime.now()
 
     changed = False
 
-    for event in events:
+    for event in events[:]:
         try:
             dt = datetime.fromisoformat(event["datetime"])
             delta = dt - now
@@ -148,12 +149,45 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
                 await send_event_notification(event, users, context, "2")
                 event["notified_2h"] = True
                 changed = True
+            
+             # ⏰ Проверка истечения события
+            if now >= dt:
+                if event["type"] == "meeting":
+                    # Рассылка о начале собрания
+                    await send_event_message(event, users, context, f"📣 Собрание \"{event['title']}\" началось!")
+                elif event["type"] == "deadline":
+                    # Найти задачу и снять её с пользователя
+                    task_id = event.get("task_id")
+                    if task_id:
+                        for t in tasks:
+                            if t["id"] == task_id:
+                                reserved_by = t.get("reserved_by")
+                                if reserved_by:
+                                    for u in users:
+                                        if reserved_by == u["user_id"]:
+                                            if "reserved_tasks" in u and task_id in u["reserved_tasks"]:
+                                                u["reserved_tasks"].remove(task_id)
+                                t["reserved_by"] = None
+                                t["deadline"] = None
+                                break
+
+                        await send_event_message(event, users, context, 
+                            f"⏰ Дедлайн по задаче \"{event['title']}\" истёк!\n"
+                            "Задача изымается и становится доступной другим участникам.")
+
+                    changed = True
+
+                # Удалить событие из списка
+                events.remove(event)
+                changed = True
 
         except Exception as e:
             print(f"❌ Ошибка авто-оповещения: {e}")
 
     if changed:
         save_json(EVENTS_FILE, events)
+        save_json(TASKS_FILE, tasks)
+        save_json(USERS_FILE, users)
 
 async def send_event_notification(event, users, context, when_str):
     dt = datetime.fromisoformat(event['datetime'])

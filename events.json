@@ -14,7 +14,7 @@
     "type": "meeting",
     "title": "Тест-рассылка",
     "description": "Если вам пришла рассылка значит збс работает",
-    "datetime": "2025-06-30T21:36:00",
+    "datetime": "2025-06-30T21:45:00",
     "notify_users": true,
     "notified_24h": false,
     "notified_2h": false
