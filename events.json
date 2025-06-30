@@ -5,6 +5,18 @@
     "title": "Собрание спустя месяц отключки",
     "description": "Обсудим планы на месяц, и дальнейшую работу над проектами",
     "datetime": "2025-07-01T17:00:00",
-    "notify_users": true
+    "notify_users": true,
+    "notified_24h": false,
+    "notified_2h": false
+  }
+  {
+    "id": 1,
+    "type": "meeting",
+    "title": "Собрание спустя месяц отключки",
+    "description": "Обсудим планы на месяц, и дальнейшую работу над проектами",
+    "datetime": "2025-06-30T21:30:00",
+    "notify_users": true,
+    "notified_24h": false,
+    "notified_2h": false
   }
 ]

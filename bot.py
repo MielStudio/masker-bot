@@ -1,7 +1,7 @@
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
-    ConversationHandler, MessageHandler, filters
+    ConversationHandler, MessageHandler, filters, JobQueue
 )
 import json
 import os
@@ -121,6 +121,62 @@ async def safe_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
             )
     except Exception as e:
         print("❌ safe_reply error:", e)
+
+async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
+    events = load_json(EVENTS_FILE)
+    users = load_json(USERS_FILE)
+    now = datetime.now()
+
+    changed = False
+
+    for event in events:
+        try:
+            dt = datetime.fromisoformat(event["datetime"])
+            delta = dt - now
+
+            if not event.get("notify_users"):
+                continue
+
+            # За 24 часа
+            if 23 <= delta.total_seconds() / 3600 <= 25 and not event.get("notified_24h"):
+                await send_event_notification(event, users, context, "24")
+                event["notified_24h"] = True
+                changed = True
+
+            # За 2 часа
+            if 1.5 <= delta.total_seconds() / 3600 <= 2.5 and not event.get("notified_2h"):
+                await send_event_notification(event, users, context, "2")
+                event["notified_2h"] = True
+                changed = True
+
+        except Exception as e:
+            print(f"❌ Ошибка авто-оповещения: {e}")
+
+    if changed:
+        save_json(EVENTS_FILE, events)
+
+async def send_event_notification(event, users, context, when_str):
+    dt = datetime.fromisoformat(event['datetime'])
+    simple_time = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+    event_text = (
+        f"⏰ Напоминание! До события <b>{event['title']}</b> осталось {when_str} часа(ов)!\n\n"
+        f"🕒 Когда: {simple_time}\n\n"
+        f"{event['description']}"
+    )
+    success, failed = 0, 0
+
+    for u in users:
+        if event.get("personal") and u["user_id"] not in event.get("users", []):
+            continue
+
+        try:
+            await context.bot.send_message(chat_id=u["user_id"], text=event_text, parse_mode="HTML")
+            success += 1
+        except Exception as e:
+            failed += 1
+            print(f"❌ Не удалось отправить {u['full_name']}: {e}")
+
+    print(f"📣 Рассылка по событию #{event['id']} ({when_str}h): Успешно: {success}, Ошибок: {failed}")
 
 # Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -831,6 +887,9 @@ def get_task_handler():
         allow_reentry=True
     )
 
+
+job_queue = app.job_queue
+job_queue.run_repeating(event_auto_notify, interval=300, first=10)
 app = ApplicationBuilder().token("7833612109:AAGfBTL2pn5WqDoWLwFYA1cZBd-XF7VzJ_o").build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
