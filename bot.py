@@ -481,8 +481,11 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "📝 Доступные задачи:\n\n"
     for t in relevant_tasks:
-        dt = datetime.fromisoformat(t["deadline"])
-        date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        if t.get("deadline"):
+            dt = datetime.fromisoformat(t["deadline"])
+            date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        else:
+            date_str = "Не назначен
         msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
                 f"📄 {t['description']}\n"
                 f"📂 Тип: {t['type']}\n"
@@ -590,8 +593,11 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "📝 Ваши текущие задачи:\n\n"
     for t in reserved_tasks:
-        dt = datetime.fromisoformat(t["deadline"])
-        date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        if t.get("deadline"):
+            dt = datetime.fromisoformat(t["deadline"])
+            date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        else:
+            date_str = "Не назначен
         msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
                 f"📄 {t['description']}\n"
                 f"📂 Тип: {t['type']}\n"
@@ -635,8 +641,11 @@ async def search_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for t in filtered_tasks:
         reserved_by = t.get("reserved_by")
         reserved_str = f"Зарезервирована пользователем {reserved_by}" if reserved_by else "Свободна"
-        dt = datetime.fromisoformat(t["deadline"])
-        date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        if t.get("deadline"):
+            dt = datetime.fromisoformat(t["deadline"])
+            date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        else:
+            date_str = "Не назначен"
         msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
                 f"📄 {t['description']}\n"
                 f"📂 Тип: {t['type']}\n"
