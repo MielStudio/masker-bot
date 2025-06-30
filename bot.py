@@ -481,16 +481,21 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "📝 Доступные задачи:\n\n"
     for t in relevant_tasks:
-        if t.get("deadline"):
-            dt = datetime.fromisoformat(t["deadline"])
-            date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        estimated_days = t.get("estimated_days", 7)
+        if estimated_days >= 7:
+            weeks = estimated_days // 7
+            days = estimated_days % 7
+            if days == 0:
+                time_str = f"{weeks} нед."
+            else:
+                time_str = f"{weeks} нед. {days} дн."
         else:
-            date_str = "Не назначен"
+            time_str = f"{estimated_days} дн."
         msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
                 f"📄 {t['description']}\n"
                 f"📂 Тип: {t['type']}\n"
                 f"🏆 Баллы: {t['points']}\n"
-                f"⏰ Дедлайн: {date_str}\n\n")
+                f"⏰ Примерное время: {time_str}\n\n")
 
     await safe_reply(update, context, msg, markup=ReplyKeyboardRemove())
     await safe_reply(update, context, "Введите номер задачи, которую хотите взять")
@@ -593,16 +598,21 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "📝 Ваши текущие задачи:\n\n"
     for t in reserved_tasks:
-        if t.get("deadline"):
-            dt = datetime.fromisoformat(t["deadline"])
-            date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        estimated_days = t.get("estimated_days", 7)
+        if estimated_days >= 7:
+            weeks = estimated_days // 7
+            days = estimated_days % 7
+            if days == 0:
+                time_str = f"{weeks} нед."
+            else:
+                time_str = f"{weeks} нед. {days} дн."
         else:
-            date_str = "Не назначен"
+            time_str = f"{estimated_days} дн."
         msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
                 f"📄 {t['description']}\n"
                 f"📂 Тип: {t['type']}\n"
                 f"🏆 Баллы: {t['points']}\n"
-                f"⏰ Дедлайн: {date_str}\n\n")
+                f"⏰ Примерное время: {time_str}\n\n")
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -641,16 +651,21 @@ async def search_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for t in filtered_tasks:
         reserved_by = t.get("reserved_by")
         reserved_str = f"Зарезервирована пользователем {reserved_by}" if reserved_by else "Свободна"
-        if t.get("deadline"):
-            dt = datetime.fromisoformat(t["deadline"])
-            date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        estimated_days = t.get("estimated_days", 7)
+        if estimated_days >= 7:
+            weeks = estimated_days // 7
+            days = estimated_days % 7
+            if days == 0:
+                time_str = f"{weeks} нед."
+            else:
+                time_str = f"{weeks} нед. {days} дн."
         else:
-            date_str = "Не назначен"
+            time_str = f"{estimated_days} дн."
         msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
                 f"📄 {t['description']}\n"
                 f"📂 Тип: {t['type']}\n"
                 f"🏆 Баллы: {t['points']}\n"
-                f"⏰ Дедлайн: {date_str}\n"
+                f"⏰ Примерное время: {time_str}\n"
                 f"📌 Статус: {reserved_str}\n\n")
 
     # Разбиваем сообщение на части по 4000 символов, чтобы не превышать лимит Телеграма
