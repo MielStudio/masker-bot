@@ -5,7 +5,7 @@ from telegram.ext import (
 )
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
@@ -530,7 +530,15 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for task in tasks:
         if task["id"] == task_id:
             task["reserved_by"] = user_id
-            deadline = task.get("deadline")
+
+            # Если дедлайна нет, генерируем его
+            if not task.get("deadline"):
+                estimated_days = task.get("estimated_days", 7)
+                new_deadline = datetime.now() + timedelta(days=estimated_days)
+                task["deadline"] = new_deadline.isoformat()
+                deadline = task["deadline"]
+            else:
+                deadline = task["deadline"]
             break
 
     for user in users:
