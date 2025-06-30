@@ -598,21 +598,17 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "📝 Ваши текущие задачи:\n\n"
     for t in reserved_tasks:
-        estimated_days = t.get("estimated_days", 7)
-        if estimated_days >= 7:
-            weeks = estimated_days // 7
-            days = estimated_days % 7
-            if days == 0:
-                time_str = f"{weeks} нед."
-            else:
-                time_str = f"{weeks} нед. {days} дн."
+        # ✅ Защита от null дедлайна
+        if t.get("deadline"):
+            dt = datetime.fromisoformat(t["deadline"])
+            date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
         else:
-            time_str = f"{estimated_days} дн."
+            date_str = "Не назначен"
         msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
                 f"📄 {t['description']}\n"
                 f"📂 Тип: {t['type']}\n"
                 f"🏆 Баллы: {t['points']}\n"
-                f"⏰ Примерное время: {time_str}\n\n")
+                f"⏰ Дедлайн: {date_str}\n\n")
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
@@ -742,9 +738,77 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/check_points – проверить баллы участника по username\n"
         "/search_task – посмотреть задачи (фильтры: reserved/unreserved/deadline)\n"
         "/task_done – пометить задачу как выполненную и удалить\n"
+        "/edit_deadline – редактирование дедлайна задач участников\n"
         # Допиши сюда другие твои админ-команды при необходимости
     )
     await update.message.reply_text(help_text, parse_mode="HTML")
+
+async def edit_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ Используй так: /edit_deadline <ID задачи> <новая дата и время>\n"
+            "Пример: /edit_deadline 3 2025-07-15T18:00"
+        )
+        return
+
+    try:
+        task_id = int(context.args[0])
+        new_dt_str = context.args[1]
+
+        # Если дата дана без T, но с пробелом, заменяем
+        if " " in new_dt_str:
+            new_dt_str = new_dt_str.replace(" ", "T")
+
+        new_dt = datetime.fromisoformat(new_dt_str)
+
+        tasks = load_json(TASKS_FILE)
+        events = load_json(EVENTS_FILE)
+
+        task = next((t for t in tasks if t["id"] == task_id), None)
+        if not task:
+            await update.message.reply_text(f"❌ Задача с ID #{task_id} не найдена.")
+            return
+
+        task["deadline"] = new_dt.isoformat()
+
+        # Обновляем событие или создаём новое
+        event = next((e for e in events if e.get("task_id") == task_id), None)
+        if event:
+            event["datetime"] = new_dt.isoformat()
+        else:
+            new_event = {
+                "id": max([e["id"] for e in events], default=0) + 1,
+                "type": "deadline",
+                "title": f"Дедлайн по задаче #{task_id}",
+                "description": "Обновлён администратором.",
+                "datetime": new_dt.isoformat(),
+                "notify_users": True,
+                "personal": True,
+                "users": [task.get("reserved_by")] if task.get("reserved_by") else [],
+                "task_id": task_id
+            }
+            events.append(new_event)
+
+        save_json(TASKS_FILE, tasks)
+        save_json(EVENTS_FILE, events)
+
+        await update.message.reply_text(
+            f"✅ Дедлайн задачи #{task_id} обновлён!\n"
+            f"Новая дата: {format_datetime_rus(new_dt)}"
+        )
+
+    except ValueError:
+        await update.message.reply_text("❌ Неверный формат даты. Используй ISO-формат: 2025-07-15T18:00")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Возникла ошибка: {e}")
 
 def get_task_handler():
     return ConversationHandler(
@@ -780,5 +844,6 @@ app.add_handler(CommandHandler("check_points", check_points))
 app.add_handler(CommandHandler("my_task", my_task))
 app.add_handler(CommandHandler("search_task", search_task))
 app.add_handler(CommandHandler("task_done", task_done))
+app.add_handler(CommandHandler("edit_deadline", edit_deadline))
 app.add_handler(get_task_handler())
 app.run_polling()
