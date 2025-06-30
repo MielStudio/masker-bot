@@ -8,12 +8,12 @@
     "notify_users": true,
     "notified_24h": false,
     "notified_2h": false
-  }
+  },
   {
-    "id": 1,
+    "id": 2,
     "type": "meeting",
-    "title": "Собрание спустя месяц отключки",
-    "description": "Обсудим планы на месяц, и дальнейшую работу над проектами",
+    "title": "Тест-рассылка",
+    "description": "Если вам пришла рассылка значит збс работает",
     "datetime": "2025-06-30T21:30:00",
     "notify_users": true,
     "notified_24h": false,

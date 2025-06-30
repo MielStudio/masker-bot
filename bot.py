@@ -888,9 +888,9 @@ def get_task_handler():
     )
 
 
+app = ApplicationBuilder().token("7833612109:AAGfBTL2pn5WqDoWLwFYA1cZBd-XF7VzJ_o").build()
 job_queue = app.job_queue
 job_queue.run_repeating(event_auto_notify, interval=300, first=10)
-app = ApplicationBuilder().token("7833612109:AAGfBTL2pn5WqDoWLwFYA1cZBd-XF7VzJ_o").build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
 app.add_handler(CommandHandler("admin_help", admin_help))
