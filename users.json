@@ -4,8 +4,18 @@
     "username": "StanPaige",
     "full_name": "Admin",
     "role": "admin",
-    "points": 286,
-    "percent_rate": 0,
+    "points": {
+      "Starky Jungle": 286,
+      "Ideal Abyss": 0,
+      "Unsouled": 0,
+      "Non-project work": 0
+    },
+    "percent_rate": {
+      "Starky Jungle": 0.0,
+      "Ideal Abyss": 0.0,
+      "Unsouled": 0.0,
+      "Non-project work": 0.0
+    },
     "reserved_tasks": [],
     "roles": [
       "программирование",
@@ -34,8 +44,18 @@
     "username": "magnewitz",
     "full_name": "T'leer",
     "role": "member",
-    "points": 83,
-    "percent_rate": 0,
+    "points": {
+      "Starky Jungle": 83,
+      "Ideal Abyss": 0,
+      "Unsouled": 0,
+      "Non-project work": 0
+    },
+    "percent_rate": {
+      "Starky Jungle": 0.0,
+      "Ideal Abyss": 0.0,
+      "Unsouled": 0.0,
+      "Non-project work": 0.0
+    },
     "reserved_tasks": [],
     "roles": [
       "программирование",
@@ -50,8 +70,18 @@
     "username": "squazib_zaza",
     "full_name": "Makarena",
     "role": "member",
-    "points": 128,
-    "percent_rate": 0,
+    "points": {
+      "Starky Jungle": 128,
+      "Ideal Abyss": 0,
+      "Unsouled": 0,
+      "Non-project work": 0
+    },
+    "percent_rate": {
+      "Starky Jungle": 0.0,
+      "Ideal Abyss": 0.0,
+      "Unsouled": 0.0,
+      "Non-project work": 0.0
+    },
     "reserved_tasks": [],
     "roles": [
       "визуальная работа",
@@ -63,8 +93,18 @@
     "username": "TM_PIX",
     "full_name": "TM_PIX",
     "role": "member",
-    "points": 194,
-    "percent_rate": 0,
+    "points": {
+      "Starky Jungle": 194,
+      "Ideal Abyss": 0,
+      "Unsouled": 0,
+      "Non-project work": 0
+    },
+    "percent_rate": {
+      "Starky Jungle": 0.0,
+      "Ideal Abyss": 0.0,
+      "Unsouled": 0.0,
+      "Non-project work": 0.0
+    },
     "reserved_tasks": [],
     "roles": [
       "визуальная работа",
@@ -77,8 +117,18 @@
     "username": "Puppy_boy_I",
     "full_name": "Pavel",
     "role": "member",
-    "points": 0,
-    "percent_rate": 0,
+    "points": {
+      "Starky Jungle": 0,
+      "Ideal Abyss": 0,
+      "Unsouled": 0,
+      "Non-project work": 0
+    },
+    "percent_rate": {
+      "Starky Jungle": 0.0,
+      "Ideal Abyss": 0.0,
+      "Unsouled": 0.0,
+      "Non-project work": 0.0
+    },
     "reserved_tasks": [],
     "roles": [
       "cценарий и текст",

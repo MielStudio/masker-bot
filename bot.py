@@ -427,13 +427,15 @@ async def give_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
         return
 
-    if len(args) < 2:
-        await update.message.reply_text("⚠️ Формат: /give_points <username> <количество>\nПример: /give_points Franky126866 20")
+    if len(args) < 4:
+        await update.message.reply_text("⚠️ Формат: /give_points <username> <проект> <количество>\n"
+            "Пример: /give_points Franky126866 \"Starky Jungle\" 20")
         return
 
     username = args[0].lstrip("@")
+    project = args[1].strip()
     try:
-        points = int(args[1])
+        points = int(args[2])
     except ValueError:
         await update.message.reply_text("❌ Количество баллов должно быть числом.")
         return
@@ -444,7 +446,8 @@ async def give_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for user_data in users:
             if user_data["username"].lower() == username.lower():
-                user_data["points"] += points
+                user_data.setdefault("points", {}).setdefault(project, 0)
+                user_data["points"][project] += points
                 break
         else:
             await update.message.reply_text("❌ Пользователь не найден.")
@@ -454,7 +457,8 @@ async def give_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
             json.dump(users, f, ensure_ascii=False, indent=2)
 
         recalculate_percent_rates()
-        await update.message.reply_text(f"✅ Пользователю @{username} добавлено {points} баллов.")
+        await update.message.reply_text(f"✅ Пользователю @{username} добавлено {points} баллов в проект <b>{project}</b>.",
+            parse_mode="HTML")
 
     except Exception as e:
         await update.message.reply_text(f"❌ Произошла ошибка: {e}")
