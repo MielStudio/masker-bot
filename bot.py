@@ -7,6 +7,7 @@ import json
 import os
 from datetime import datetime, timedelta
 import re
+from zoneinfo import ZoneInfo
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "tasks.json")
@@ -19,6 +20,8 @@ month_names = {
     1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
     7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
 }
+
+WORK_TZ = ZoneInfo("Europe/Kiev") 
 
 async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = load_json("users.json")
@@ -126,7 +129,7 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
     events = load_json(EVENTS_FILE)
     users = load_json(USERS_FILE)
     tasks = load_json(TASKS_FILE)
-    now = datetime.now()
+    now = datetime.now(WORK_TZ)
 
     changed = False
 
@@ -380,7 +383,7 @@ async def upcoming_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat.id, text=f"⚠️ Какие то силы мешают мне видеть будущее:\n<code>{e}</code>", parse_mode="HTML")
         return
 
-    now = datetime.now()
+    now = datetime.now(WORK_TZ)
 
     # Отбираем события по времени и доступности (общие или персональные с включением юзера)
     upcoming = []
@@ -529,8 +532,9 @@ async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, "⚠️ Почему тебя нет в реестре империи?")
         return ConversationHandler.END
 
-    if user.get("reserved_tasks"):
-        await safe_reply(update, context, "⚠️ Судьба уже подарила тебе миссию")
+    reserved = user.get("reserved_tasks", [])
+    if len(reserved) >= 3:
+        await safe_reply(update, context, "⚠️ Ты не можешь брать более 3 задач одновременно!")
         return ConversationHandler.END
 
     # Пока только один проект
@@ -623,7 +627,24 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     tasks = load_json("tasks.json")
     users = load_json("users.json")
     events = load_json("events.json")
+    
+    user = next((u for u in users if u["user_id"] == user_id), None)
+    reserved = user.get("reserved_tasks", []) if user else []
 
+    if len(reserved) >= 3:
+        await safe_reply(update, context, "⚠️ Ты не можешь иметь более 3 задач одновременно!")
+        return ConversationHandler.END
+
+    # Если уже есть хотя бы 1, но меньше 3 и не было повторного подтверждения
+    if len(reserved) >= 1 and not context.user_data.get("confirmed_multiple"):
+        context.user_data["confirmed_multiple"] = True
+        await safe_reply(update, context,
+            "⚠️ Ты берешь ещё одну задачу.\n"
+            "Будь осторожен: более одной задачи может усложнить твою работу.\n"
+            "Ты точно уверен? Напиши ещё раз 'да' чтобы подтвердить."
+        )
+        return CONFIRM
+    
     deadline = None
     for task in tasks:
         if task["id"] == task_id:
@@ -632,7 +653,7 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Если дедлайна нет, генерируем его
             if not task.get("deadline"):
                 estimated_days = task.get("estimated_days", 7)
-                new_deadline = datetime.now() + timedelta(days=estimated_days)
+                new_deadline = datetime.now(WORK_TZ) + timedelta(days=estimated_days)
                 task["deadline"] = new_deadline.isoformat()
                 deadline = task["deadline"]
             else:
