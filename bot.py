@@ -1,4 +1,4 @@
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
     ConversationHandler, MessageHandler, filters, JobQueue
@@ -864,6 +864,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/edit_deadline – редактирование дедлайна задач участников\n"
         "/delete_event – удалить событие по ID\n"
         "/add_task – добавить новую задачу\n"
+        "/unassign_task – снять участника с задачи, удалить дедлайн и сделать её доступной\n"
         # Допиши сюда другие твои админ-команды при необходимости
     )
     await update.message.reply_text(help_text, parse_mode="HTML")
@@ -1030,6 +1031,71 @@ async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("⚠️ Используй: /unassign_task <ID задачи>")
+        return
+
+    task_id = int(context.args[0])
+
+    tasks = load_json(TASKS_FILE)
+    users = load_json(USERS_FILE)
+    events = load_json(EVENTS_FILE)
+
+    task = next((t for t in tasks if t["id"] == task_id), None)
+    if not task:
+        await update.message.reply_text(f"❌ Задача #{task_id} не найдена.")
+        return
+
+    reserved_by = task.get("reserved_by")
+    if not reserved_by:
+        await update.message.reply_text(f"⚠️ Задача #{task_id} уже свободна.")
+        return
+
+    # Найти пользователя и убрать задачу из его списка
+    for u in users:
+        if u["user_id"] == reserved_by:
+            if "reserved_tasks" in u and task_id in u["reserved_tasks"]:
+                u["reserved_tasks"].remove(task_id)
+            break
+
+    # Обнулить задачу
+    task["reserved_by"] = None
+    task["deadline"] = None
+
+    # Удалить связанный дедлайн-ивент
+    old_events = len(events)
+    events = [e for e in events if e.get("task_id") != task_id]
+    removed = old_events - len(events)
+
+    save_json(TASKS_FILE, tasks)
+    save_json(USERS_FILE, users)
+    save_json(EVENTS_FILE, events)
+
+    await update.message.reply_text(
+        f"✅ Задача #{task_id} теперь свободна. "
+        f"Удалено связанных событий: {removed}."
+    )
+
+    # Если хочешь, можно уведомить бывшего исполнителя
+    try:
+        await context.bot.send_message(
+            chat_id=reserved_by,
+            text=(f"⚠️ Задача <b>{task['title']}</b> (#{task_id}) "
+                  "была снята с вас администратором и теперь доступна другим."),
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"❌ Не удалось уведомить участника: {e}")
+
 def get_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("get_task", get_task_start)],
@@ -1053,6 +1119,14 @@ def get_task_handler():
 
 
 app = ApplicationBuilder().token("7833612109:AAGfBTL2pn5WqDoWLwFYA1cZBd-XF7VzJ_o").build()
+app.bot.set_my_commands([
+    BotCommand("start", "Моё приветствие"),
+    BotCommand("help", "Все твои доступные заклинания"),
+    BotCommand("upcoming_events", "Посмотреть грядущие события"),
+    BotCommand("my_points", "Увидеть свои баллы"),
+    BotCommand("my_task", "Посмотреть свои задачи"),
+    BotCommand("get_task", "Взять новую задачу"),
+])
 job_queue = app.job_queue
 job_queue.run_repeating(event_auto_notify, interval=300, first=10)
 app.add_handler(CommandHandler("start", start))
@@ -1070,5 +1144,6 @@ app.add_handler(CommandHandler("task_done", task_done))
 app.add_handler(CommandHandler("edit_deadline", edit_deadline))
 app.add_handler(CommandHandler("delete_event", delete_event))
 app.add_handler(CommandHandler("add_task", add_task))
+app.add_handler(CommandHandler("unassign_task", unassign_task))
 app.add_handler(get_task_handler())
 app.run_polling()
