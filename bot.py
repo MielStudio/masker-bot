@@ -534,7 +534,7 @@ async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     # Пока только один проект
-    projects = ["Starky Jungle"]
+    projects = ["Starky Jungle", "Ideal Abyss", "Unsouled", "Non-project work"]
     context.user_data["user_id"] = user_id
 
     markup = ReplyKeyboardMarkup([[p] for p in projects], one_time_keyboard=True, resize_keyboard=True)
