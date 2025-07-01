@@ -477,11 +477,15 @@ async def my_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for user in users:
             if user.get("user_id") == tg_user_id:
-                text = (
-                    f"📊 <b>Твои баллы:</b>\n"
-                    f"Очки: <b>{user['points']}</b>\n"
-                    f"Процентная ставка: <b>{round(user['percent_rate'] * 100)}%</b>"
-                )
+                text = "📊 <b>Твои баллы и ставки:</b>\n\n"
+
+                points_dict = user.get("points", {})
+                percent_dict = user.get("percent_rate", {})
+
+                for project in points_dict.keys():
+                    points = points_dict.get(project, 0)
+                    percent = percent_dict.get(project, 0) * 100
+                    text += f"🔹 <b>{project}</b>: {points} баллов ({round(percent)}%)\n"
                 await update.message.reply_text(text, parse_mode="HTML")
                 return
 
@@ -512,11 +516,15 @@ async def check_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for user in users:
             if user["username"].lower() == username.lower():
-                text = (
-                    f"📊 <b>Баллы участника @{username}:</b>\n"
-                    f"Очки: <b>{user['points']}</b>\n"
-                    f"Процентная ставка: <b>{round(user['percent_rate'] * 100)}%</b>"
-                )
+                text = f"📊 <b>Баллы @{username}:</b>\n\n"
+
+                points_dict = user.get("points", {})
+                percent_dict = user.get("percent_rate", {})
+
+                for project in points_dict.keys():
+                    points = points_dict.get(project, 0)
+                    percent = percent_dict.get(project, 0) * 100
+                    text += f"🔹 <b>{project}</b>: {points} баллов ({round(percent)}%)\n"
                 await update.message.reply_text(text, parse_mode="HTML")
                 return
 
