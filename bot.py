@@ -1112,7 +1112,7 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not context.args or len(context.args) < 2:
         await update.message.reply_text(
             "⚠️ Используй так:\n"
-            "<code>/assign_task <ID задачи> <username></code>\n\n"
+            "<code>/assign_task &lt;ID задачи&gt; &lt;username&gt;</code>\n\n"
             "Пример:\n"
             "<code>/assign_task 2 Franky126866</code>",
             parse_mode="HTML"
