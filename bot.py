@@ -1248,7 +1248,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=u["user_id"],
-                    text=f"📢 Сообщение от администратора:\n\n{message_text}"
+                    text=f"📢 Сообщение от администратора:\n\n{message_text}",
                     parse_mode="HTML"
                 )
                 success += 1
