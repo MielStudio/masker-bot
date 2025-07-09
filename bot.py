@@ -135,7 +135,7 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
 
     for event in events[:]:
         try:
-            dt = datetime.fromisoformat(event["datetime"])
+            dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
             delta = dt - now
 
             if not event.get("notify_users"):
@@ -193,7 +193,7 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
         save_json(USERS_FILE, users)
 
 async def send_event_notification(event, users, context, when_str):
-    dt = datetime.fromisoformat(event['datetime'])
+    dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
     simple_time = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
     event_text = (
         f"⏰ Напоминание! До события <b>{event['title']}</b> осталось {when_str} часа(ов)!\n\n"
@@ -331,7 +331,7 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
         7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
     }
-    dt = datetime.fromisoformat(event['datetime'])
+    dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
     simple_time = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
     # Формируем текст уведомления
     event_text = (
@@ -723,7 +723,7 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for t in reserved_tasks:
         # ✅ Защита от null дедлайна
         if t.get("deadline"):
-            dt = datetime.fromisoformat(t["deadline"])
+            dt = datetime.fromisoformat(t["deadline"]).replace(tzinfo=WORK_TZ)
             date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
         else:
             date_str = "Не назначен"
@@ -865,6 +865,9 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/delete_event – удалить событие по ID\n"
         "/add_task – добавить новую задачу\n"
         "/unassign_task – снять участника с задачи, удалить дедлайн и сделать её доступной\n"
+        "/assign_task – Назначить задачу участнику по username\n"
+        "/broadcast – отправить сообщение всем участникам или одному (@username)\n"
+        "/show_all_events – увидеть полный список всех событий\n"
         # Допиши сюда другие твои админ-команды при необходимости
     )
     await update.message.reply_text(help_text, parse_mode="HTML")
@@ -893,7 +896,7 @@ async def edit_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if " " in new_dt_str:
             new_dt_str = new_dt_str.replace(" ", "T")
 
-        new_dt = datetime.fromisoformat(new_dt_str)
+        new_dt = datetime.fromisoformat(new_dt_str).replace(tzinfo=WORK_TZ)
 
         tasks = load_json(TASKS_FILE)
         events = load_json(EVENTS_FILE)
@@ -1096,6 +1099,211 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"❌ Не удалось уведомить участника: {e}")
 
+async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ Используй так:\n"
+            "<code>/assign_task <ID задачи> <username></code>\n\n"
+            "Пример:\n"
+            "<code>/assign_task 2 Franky126866</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    try:
+        task_id = int(context.args[0])
+        username = context.args[1].lstrip("@").strip().lower()
+
+        tasks = load_json(TASKS_FILE)
+        users = load_json(USERS_FILE)
+        events = load_json(EVENTS_FILE)
+
+        task = next((t for t in tasks if t["id"] == task_id), None)
+        if not task:
+            await update.message.reply_text(f"❌ Задача #{task_id} не найдена.")
+            return
+
+        if task.get("reserved_by"):
+            await update.message.reply_text(f"⚠️ Задача #{task_id} уже назначена.")
+            return
+
+        user_obj = next((u for u in users if u["username"].lower() == username), None)
+        if not user_obj:
+            await update.message.reply_text(f"❌ Пользователь @{username} не найден.")
+            return
+
+        # Проставляем резерв
+        user_id = user_obj["user_id"]
+        task["reserved_by"] = user_id
+
+        # Генерируем дедлайн, если его ещё нет
+        if not task.get("deadline"):
+            estimated_days = task.get("estimated_days", 7)
+            deadline = datetime.now(WORK_TZ) + timedelta(days=estimated_days)
+            task["deadline"] = deadline.isoformat()
+        else:
+            deadline = datetime.fromisoformat(task["deadline"])
+
+        # Добавляем задачу в список пользователя
+        user_obj.setdefault("reserved_tasks", []).append(task_id)
+
+        # Добавляем ивент-дедлайн
+        new_event = {
+            "id": max([e["id"] for e in events], default=0) + 1,
+            "type": "deadline",
+            "title": f"Дедлайн по задаче #{task_id}",
+            "description": "Администратор назначил вам задачу.",
+            "datetime": deadline.isoformat(),
+            "notify_users": True,
+            "personal": True,
+            "users": [user_id],
+            "task_id": task_id
+        }
+        events.append(new_event)
+
+        # Сохраняем изменения
+        save_json(TASKS_FILE, tasks)
+        save_json(USERS_FILE, users)
+        save_json(EVENTS_FILE, events)
+
+        await update.message.reply_text(
+            f"✅ Задача #{task_id} успешно назначена пользователю @{username}."
+        )
+
+        # Отправляем уведомление назначенному пользователю
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=(
+                    f"📌 Вам назначена новая задача!\n\n"
+                    f"<b>{task['title']}</b> (#{task_id})\n"
+                    f"{task['description']}\n\n"
+                    f"⏰ Дедлайн: {format_datetime_rus(deadline)}"
+                ),
+                parse_mode="HTML"
+            )
+        except Exception as e:
+            print(f"❌ Не удалось отправить уведомление пользователю: {e}")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ Формат: /broadcast <сообщение> или /broadcast <username>; <сообщение>\n\n"
+            "Примеры:\n"
+            "<code>/broadcast Внимание! Сегодня собрание.</code>\n"
+            "<code>/broadcast Franky126866; Привет! Для тебя личное сообщение.</code>",
+            parse_mode="HTML"
+        )
+        return
+
+    raw_input = " ".join(context.args)
+    if ";" in raw_input:
+        # Личное сообщение одному
+        parts = raw_input.split(";", 1)
+        username = parts[0].strip().lstrip("@").lower()
+        message_text = parts[1].strip()
+
+        users = load_json(USERS_FILE)
+        user_obj = next((u for u in users if u["username"].lower() == username), None)
+        if not user_obj:
+            await update.message.reply_text(f"❌ Пользователь @{username} не найден.")
+            return
+
+        try:
+            await context.bot.send_message(
+                chat_id=user_obj["user_id"],
+                text=f"📢 Сообщение от администратора:\n\n{message_text}"
+            )
+            await update.message.reply_text(f"✅ Сообщение отправлено пользователю @{username}.")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка при отправке: {e}")
+
+    else:
+        # Общая рассылка всем
+        message_text = raw_input.strip()
+        users = load_json(USERS_FILE)
+        success, failed = 0, 0
+
+        for u in users:
+            try:
+                await context.bot.send_message(
+                    chat_id=u["user_id"],
+                    text=f"📢 Сообщение от администратора:\n\n{message_text}"
+                )
+                success += 1
+            except Exception as e:
+                print(f"❌ Ошибка для {u.get('username')}: {e}")
+                failed += 1
+
+        await update.message.reply_text(
+            f"✅ Рассылка завершена.\nОтправлено: {success} | Ошибок: {failed}."
+        )
+
+async def show_all_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    try:
+        events = load_json(EVENTS_FILE)
+        if not events:
+            await update.message.reply_text("📭 Список событий пуст.")
+            return
+
+        now = datetime.now(WORK_TZ)
+
+        # Сортируем по дате и времени
+        events_sorted = sorted(events, key=lambda e: e.get("datetime") or "")
+
+        msg = "<b>📅 Все события:</b>\n\n"
+        for event in events_sorted:
+            dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
+            status = "✅ Актуально" if dt >= now else "⌛ Уже прошло"
+
+            personal_str = ""
+            if event.get("personal", False):
+                personal_str = " (Персональное)"
+            
+            msg += (
+                f"🔹 <b>{event['title']}</b>{personal_str}\n"
+                f"🗂️ Тип: {event['type']}\n"
+                f"🕒 Когда: {format_datetime_rus(dt)}\n"
+                f"📄 {event['description']}\n"
+                f"📌 Статус: {status}\n"
+                f"🆔 ID: {event['id']}\n\n"
+            )
+
+        # Если сообщение слишком большое — разбиваем
+        max_len = 4000
+        for i in range(0, len(msg), max_len):
+            await update.message.reply_text(msg[i:i+max_len], parse_mode="HTML")
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
 def get_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("get_task", get_task_start)],
@@ -1145,5 +1353,8 @@ app.add_handler(CommandHandler("edit_deadline", edit_deadline))
 app.add_handler(CommandHandler("delete_event", delete_event))
 app.add_handler(CommandHandler("add_task", add_task))
 app.add_handler(CommandHandler("unassign_task", unassign_task))
+app.add_handler(CommandHandler("assign_task", assign_task_to_user))
+app.add_handler(CommandHandler("broadcast", broadcast_message))
+app.add_handler(CommandHandler("show_all_events", show_all_events))
 app.add_handler(get_task_handler())
 app.run_polling()
