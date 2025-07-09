@@ -868,6 +868,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/assign_task – Назначить задачу участнику по username\n"
         "/broadcast – отправить сообщение всем участникам или одному (@username)\n"
         "/show_all_events – увидеть полный список всех событий\n"
+        "/delete_event – удалить событие по ID\n"
         # Допиши сюда другие твои админ-команды при необходимости
     )
     await update.message.reply_text(help_text, parse_mode="HTML")
@@ -1185,7 +1186,7 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
                 text=(
                     f"📌 Вам назначена новая задача!\n\n"
                     f"<b>{task['title']}</b> (#{task_id})\n"
-                    f"{task['description']}\n\n"
+                    f"{html.escape(task['description'])}\n\n"
                     f"⏰ Дедлайн: {format_datetime_rus(deadline)}"
                 ),
                 parse_mode="HTML"
@@ -1248,6 +1249,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(
                     chat_id=u["user_id"],
                     text=f"📢 Сообщение от администратора:\n\n{message_text}"
+                    parse_mode="HTML"
                 )
                 success += 1
             except Exception as e:
@@ -1304,6 +1306,41 @@ async def show_all_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
+async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    if not context.args or len(context.args) < 1:
+        await update.message.reply_text(
+            "⚠️ Используй так: /delete_event <ID события>\nПример: /delete_event 2"
+        )
+        return
+
+    try:
+        event_id = int(context.args[0])
+        events = load_json(EVENTS_FILE)
+        event = next((e for e in events if e["id"] == event_id), None)
+
+        if not event:
+            await update.message.reply_text(f"❌ Событие с ID #{event_id} не найдено.")
+            return
+
+        # Удаляем событие
+        events = [e for e in events if e["id"] != event_id]
+        save_json(EVENTS_FILE, events)
+
+        await update.message.reply_text(f"✅ Событие \"{event['title']}\" (ID #{event_id}) успешно удалено.")
+
+    except ValueError:
+        await update.message.reply_text("❌ ID события должен быть числом.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Произошла ошибка: {e}")
+
 def get_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("get_task", get_task_start)],
@@ -1356,5 +1393,6 @@ app.add_handler(CommandHandler("unassign_task", unassign_task))
 app.add_handler(CommandHandler("assign_task", assign_task_to_user))
 app.add_handler(CommandHandler("broadcast", broadcast_message))
 app.add_handler(CommandHandler("show_all_events", show_all_events))
+app.add_handler(CommandHandler("delete_event", delete_event))
 app.add_handler(get_task_handler())
 app.run_polling()
