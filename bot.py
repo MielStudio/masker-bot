@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timedelta
 import re
 from zoneinfo import ZoneInfo
+import shlex
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "tasks.json")
@@ -421,7 +422,7 @@ async def give_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.effective_user
-    args = context.args if context.args else []
+    args = shlex.split(update.message.text)[1:]
 
     if user.id != ADMIN_ID:
         await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
@@ -550,7 +551,7 @@ async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     # Пока только один проект
-    projects = ["Starky Jungle", "Ideal Abyss", "Unsouled", "Non-project work"]
+    projects = ["Starky Jungle", "Ideal Abyss", "Short film", "Non-project work"]
     context.user_data["user_id"] = user_id
 
     markup = ReplyKeyboardMarkup([[p] for p in projects], one_time_keyboard=True, resize_keyboard=True)

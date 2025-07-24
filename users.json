@@ -5,7 +5,7 @@
     "full_name": "Admin",
     "role": "admin",
     "points": {
-      "Starky Jungle": 286,
+      "Starky Jungle": 336,
       "Ideal Abyss": 0,
       "Unsouled": 0,
       "Non-project work": 0
@@ -45,10 +45,10 @@
     "full_name": "T'leer",
     "role": "member",
     "points": {
-      "Starky Jungle": 83,
-      "Ideal Abyss": 0,
+      "Starky Jungle": 88,
+      "Ideal Abyss": 25,
       "Unsouled": 0,
-      "Non-project work": 0
+      "Non-project work": 10
     },
     "percent_rate": {
       "Starky Jungle": 0.0,
@@ -71,7 +71,7 @@
     "full_name": "Makarena",
     "role": "member",
     "points": {
-      "Starky Jungle": 128,
+      "Starky Jungle": 148,
       "Ideal Abyss": 0,
       "Unsouled": 0,
       "Non-project work": 0
@@ -94,7 +94,7 @@
     "full_name": "TM_PIX",
     "role": "member",
     "points": {
-      "Starky Jungle": 194,
+      "Starky Jungle": 214,
       "Ideal Abyss": 0,
       "Unsouled": 0,
       "Non-project work": 0
@@ -118,7 +118,7 @@
     "full_name": "Pavel",
     "role": "member",
     "points": {
-      "Starky Jungle": 0,
+      "Starky Jungle": 15,
       "Ideal Abyss": 0,
       "Unsouled": 0,
       "Non-project work": 0
@@ -133,6 +133,30 @@
     "roles": [
       "cценарий и текст",
       "маркетинг и PR"
+    ]
+  },
+  {
+    "user_id": 5599406978,
+    "username": "guitarlover",
+    "full_name": "Lex",
+    "role": "member",
+    "points": {
+      "Starky Jungle": 5,
+      "Ideal Abyss": 0,
+      "Unsouled": 0,
+      "Non-project work": 0
+    },
+    "percent_rate": {
+      "Starky Jungle": 0.0,
+      "Ideal Abyss": 0.0,
+      "Unsouled": 0.0,
+      "Non-project work": 0.0
+    },
+    "reserved_tasks": [],
+    "roles": [
+      "cценарий и текст",
+      "маркетинг и PR",
+      "геймдизайн"
     ]
   }
 ]
