@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import re
 from zoneinfo import ZoneInfo
 import shlex
+import html
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "tasks.json")
@@ -416,53 +417,50 @@ async def upcoming_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id=chat.id, text=text.strip(), parse_mode="HTML")
 
 async def give_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global user_data
+
     if not await check_user_membership(update, context):
         return  # пользователь не в команде — дальше не идём
     if not update.message or not update.effective_user:
         return
 
-    user = update.effective_user
-    args = shlex.split(update.message.text)[1:]
-
-    if user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
-        return
-
-    if len(args) < 4:
-        await update.message.reply_text("⚠️ Формат: /give_points <username> <проект> <количество>\n"
-            "Пример: /give_points Franky126866 \"Starky Jungle\" 20")
-        return
-
-    username = args[0].lstrip("@")
-    project = args[1].strip()
-    try:
-        points = int(args[2])
-    except ValueError:
-        await update.message.reply_text("❌ Количество баллов должно быть числом.")
-        return
+    import shlex  # Добавь в начало файла, если ещё нет
 
     try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            users = json.load(f)
-
-        for user_data in users:
-            if user_data["username"].lower() == username.lower():
-                user_data.setdefault("points", {}).setdefault(project, 0)
-                user_data["points"][project] += points
-                break
-        else:
-            await update.message.reply_text("❌ Пользователь не найден.")
+        args = shlex.split(update.message.text)[1:]  # Парсинг с кавычками
+        if len(args) < 3:
+            await update.message.reply_text(
+                "⚠️ Формат: /give_points <username> <проект> <количество>\n"
+                "Пример: /give_points Franky126866 \"Starky Jungle\" 20"
+            )
             return
 
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(users, f, ensure_ascii=False, indent=2)
+        username = args[0].lstrip("@")
+        project = args[1]
+        try:
+            points = int(args[2])
+        except ValueError:
+            await update.message.reply_text("❌ Количество баллов должно быть числом.")
+            return
 
-        recalculate_percent_rates()
-        await update.message.reply_text(f"✅ Пользователю @{username} добавлено {points} баллов в проект <b>{project}</b>.",
-            parse_mode="HTML")
+        # Проверка наличия пользователя
+        if username not in user_data:
+            await update.message.reply_text(f"❌ Пользователь {username} не найден.")
+            return
 
+        # Добавление баллов
+        if username not in user_data:
+            user_data[username] = {"points": {}, "reserved_tasks": []}
+        if project not in user_data[username]["points"]:
+            user_data[username]["points"][project] = 0
+        user_data[username]["points"][project] += points
+
+        save_user_data()
+        await update.message.reply_text(
+            f"✅ {points} баллов добавлено пользователю {username} по проекту \"{project}\"."
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ Произошла ошибка: {e}")
+        await update.message.reply_text(f"Произошла ошибка: {str(e)}")
 
 async def my_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -1209,11 +1207,10 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         await update.message.reply_text(
-            "⚠️ Формат: /broadcast <сообщение> или /broadcast <username>; <сообщение>\n\n"
-            "Примеры:\n"
-            "<code>/broadcast Внимание! Сегодня собрание.</code>\n"
-            "<code>/broadcast Franky126866; Привет! Для тебя личное сообщение.</code>",
-            parse_mode="HTML"
+            "📣 Введите сообщение для рассылки.\n\n"
+            "⚠️ *Сообщение будет отправлено всем участникам команды*\n"
+            "Напишите `отмена`, чтобы отменить рассылку.",
+            parse_mode="MarkdownV2"
         )
         return
 
@@ -1241,7 +1238,7 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     else:
         # Общая рассылка всем
-        message_text = raw_input.strip()
+        message_text = html.escape(raw_input.strip())
         users = load_json(USERS_FILE)
         success, failed = 0, 0
 
