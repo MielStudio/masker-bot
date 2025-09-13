@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import shlex
 import html
 from handlers.add_event_command import build_add_event_handler
+from handlers.give_points_command import build_give_points_handler
 import calendar as cal
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
@@ -719,52 +720,6 @@ async def upcoming_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"📢 <b>{event['title']}</b>\n🕒 {date_str}\n{event['description']}\n\n"
 
     await context.bot.send_message(chat_id=chat.id, text=text.strip(), parse_mode="HTML")
-
-async def give_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global user_data
-
-    if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
-    if not update.message or not update.effective_user:
-        return
-
-    import shlex  # Добавь в начало файла, если ещё нет
-
-    try:
-        args = shlex.split(update.message.text)[1:]  # Парсинг с кавычками
-        if len(args) < 3:
-            await update.message.reply_text(
-                "⚠️ Формат: /give_points <username> <проект> <количество>\n"
-                "Пример: /give_points Franky126866 \"Starky Jungle\" 20"
-            )
-            return
-
-        username = args[0].lstrip("@")
-        project = args[1]
-        try:
-            points = int(args[2])
-        except ValueError:
-            await update.message.reply_text("❌ Количество баллов должно быть числом.")
-            return
-
-        # Проверка наличия пользователя
-        if username not in user_data:
-            await update.message.reply_text(f"❌ Пользователь {username} не найден.")
-            return
-
-        # Добавление баллов
-        if username not in user_data:
-            user_data[username] = {"points": {}, "reserved_tasks": []}
-        if project not in user_data[username]["points"]:
-            user_data[username]["points"][project] = 0
-        user_data[username]["points"][project] += points
-
-        save_user_data()
-        await update.message.reply_text(
-            f"✅ {points} баллов добавлено пользователю {username} по проекту \"{project}\"."
-        )
-    except Exception as e:
-        await update.message.reply_text(f"Произошла ошибка: {str(e)}")
 
 async def my_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -1761,7 +1716,13 @@ app.add_handler(build_add_event_handler(
 ))
 app.add_handler(CommandHandler("notify", notify))
 app.add_handler(CommandHandler("upcoming_events", upcoming_events))
-app.add_handler(CommandHandler("give_points", give_points))
+app.add_handler(build_give_points_handler(
+    admin_id=ADMIN_ID,
+    users_file=USERS_FILE,
+    load_json=load_json,
+    save_json=save_json,
+    recalculate_percent_rates=recalculate_percent_rates,
+))
 app.add_handler(CommandHandler("my_points", my_points))
 app.add_handler(CommandHandler("check_points", check_points))
 app.add_handler(CommandHandler("my_task", my_task))
