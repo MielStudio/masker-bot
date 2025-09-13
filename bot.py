@@ -1,10 +1,13 @@
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
-    ConversationHandler, MessageHandler, filters, JobQueue
+    ConversationHandler, MessageHandler, filters, JobQueue, CallbackQueryHandler
 )
+from telegram.constants import ParseMode
 import json
 import os
+from db import AsyncSessionLocal  # новый импорт
+from models import Task, Event, Project  # что нужно из моделей
 from datetime import datetime, timedelta
 import re
 from zoneinfo import ZoneInfo
@@ -23,10 +26,10 @@ month_names = {
     7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
 }
 
-WORK_TZ = ZoneInfo("Europe/Kiev") 
+WORK_TZ = ZoneInfo("Europe/Kyiv")
 
 async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users = load_json("users.json")
+    users = load_json(USERS_FILE)
     user_id = update.effective_user.id if update.effective_user else None
     if not user_id:
         return False
@@ -43,26 +46,59 @@ async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TY
 def format_datetime_rus(dt: datetime) -> str:
     return f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
 
+def format_date_only_rus(dt: datetime) -> str:
+    return f"{dt.day} {month_names[dt.month]} {dt.year}"
+
+def get_user_by_id(user_id: int):
+    users = load_json(USERS_FILE)
+    return next((u for u in users if u.get("user_id") == user_id), None)
+
+def profile_root_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Баллы", callback_data="pf:points")],
+        [InlineKeyboardButton("🧰 Работа", callback_data="pf:work")],
+        [InlineKeyboardButton("📅 Ивенты", callback_data="pf:events")],
+    ])
+
+def profile_back_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Назад в профиль", callback_data="pf:back")],
+    ])
+
 def recalculate_percent_rates():
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            users = json.load(f)
+    with open(USERS_FILE, "r", encoding="utf-8") as f:
+        users = json.load(f)
 
-        total_points = sum(user["points"] for user in users if user["points"] > 0)
+    # Собираем множество всех проектов
+    projects = set()
+    for u in users:
+        pts = u.get("points", {}) or {}
+        if isinstance(pts, (int, float)):
+            pts = {"Non-project work": int(pts)}
+        projects.update(pts.keys())
 
-        if total_points == 0:
-            for user in users:
-                user["percent_rate"] = 0.0
-        else:
-            for user in users:
-                user["percent_rate"] = round(user["points"] / total_points, 3)  # Округляем до тысячных
+    # Считаем суммы по проектам
+    totals = {p: 0 for p in projects}
+    for u in users:
+        pts = u.get("points", {}) or {}
+        if isinstance(pts, (int, float)):
+            pts = {"Non-project work": int(pts)}
+        for p, v in pts.items():
+            totals[p] += v
 
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(users, f, ensure_ascii=False, indent=2)
+    # Записываем доли по каждому проекту
+    for u in users:
+        pts = u.get("points", {}) or {}
+        if isinstance(pts, (int, float)):
+            pts = {"Non-project work": int(pts)}
+        u["percent_rate"] = {}
+        for p in projects:
+            total = totals[p] or 0
+            mine = pts.get(p, 0)
+            u["percent_rate"][p] = (mine / total) if total > 0 else 0.0
 
-        print("✅ Процентные ставки обновлены.")
-    except Exception as e:
-        print(f"❌ Ошибка при перерасчете ставок: {e}")
+    with open(USERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
 
 def add_points(user_id: int, points: int):
     try:
@@ -108,6 +144,104 @@ def save_json(path, data):
             print(f"💾 Сохранено {len(data)} объектов в {path}")
     except Exception as e:
         print(f"❌ Ошибка при сохранении {path}: {e}")
+
+def format_profile_text(tg_user, user_record) -> str:
+    full_name = user_record.get("full_name") or (tg_user.full_name if tg_user else "Без имени")
+    # роли могут быть в 'roles' (list) или 'role' (str)
+    roles = user_record.get("roles")
+    if isinstance(roles, list):
+        roles_str = ", ".join(roles)
+    elif isinstance(roles, str):
+        roles_str = roles
+    else:
+        roles_str = "—"
+
+    joined_at = user_record.get("joined_at")
+    if joined_at:
+        try:
+            dt = datetime.fromisoformat(joined_at)
+            joined_str = format_date_only_rus(dt)
+        except:
+            joined_str = joined_at  # как есть, если формат нестандартный
+    else:
+        joined_str = "—"
+
+    return (
+        "<b>👤 Профиль</b>\n\n"
+        f"Имя: <b>{html.escape(full_name)}</b>\n"
+        f"Должности: <b>{html.escape(roles_str)}</b>\n"
+        f"Официально в команде с: <b>{joined_str}</b>\n\n"
+        "Выбери нужный раздел ниже:"
+    )
+
+def build_points_text_for_user(user_record) -> str:
+    users = load_json(USERS_FILE)
+    my_points: dict = user_record.get("points", {}) or {}
+
+    # Собираем множество всех проектов
+    all_projects = set()
+    for u in users:
+        for prj in (u.get("points", {}) or {}):
+            all_projects.add(prj)
+
+    if not all_projects:
+        return "📊 Баллы не найдены."
+
+    lines = ["<b>📊 Твои баллы и доля по проектам:</b>", ""]
+    for prj in sorted(all_projects):
+        total = 0
+        for u in users:
+            total += (u.get("points", {}) or {}).get(prj, 0)
+
+        mine = my_points.get(prj, 0)
+        share = (mine / total * 100) if total > 0 else 0.0
+        lines.append(f"• <b>{html.escape(prj)}</b>: {mine} балл(ов) ({share:.1f}%)")
+    return "\n".join(lines)
+
+def build_work_text_for_user(user_id: int) -> str:
+    tasks = load_json(TASKS_FILE)
+    my_tasks = [t for t in tasks if t.get("reserved_by") == user_id]
+    if not my_tasks:
+        return "🧰 Сейчас у тебя нет активных задач."
+
+    out = ["<b>🧰 Твои текущие задачи:</b>", ""]
+    for t in my_tasks:
+        if t.get("deadline"):
+            dt = datetime.fromisoformat(t["deadline"]).replace(tzinfo=WORK_TZ)
+            ddl = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        else:
+            ddl = "Не назначен"
+        out.append(
+            f"• <b>{html.escape(t['title'])}</b> (#{t['id']})\n"
+            f"  ⏰ Дедлайн: {ddl}\n"
+            f"  🏆 Баллы: {t.get('points', 0)}\n"
+        )
+    return "\n".join(out).strip()
+
+def build_events_text_for_user(user_id: int) -> str:
+    events = load_json(EVENTS_FILE)
+    now = datetime.now(WORK_TZ)
+    upcoming = []
+    for e in events:
+        try:
+            dt = datetime.fromisoformat(e["datetime"]).replace(tzinfo=WORK_TZ)
+        except:
+            continue
+        if dt < now:
+            continue
+        if not e.get("personal") or user_id in (e.get("users") or []):
+            upcoming.append((dt, e))
+
+    if not upcoming:
+        return "📅 Ближайших событий для тебя не найдено."
+
+    upcoming.sort(key=lambda x: x[0])
+    upcoming = upcoming[:5]
+    out = ["<b>📅 Твои ближайшие события:</b>", ""]
+    for dt, e in upcoming:
+        when = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        out.append(f"• <b>{html.escape(e['title'])}</b>\n  🕒 {when}\n  {html.escape(e.get('description',''))}\n")
+    return "\n".join(out).strip()
 
 async def safe_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
                      text: str, markup=None):
@@ -217,15 +351,20 @@ async def send_event_notification(event, users, context, when_str):
 
     print(f"📣 Рассылка по событию #{event['id']} ({when_str}h): Успешно: {success}, Ошибок: {failed}")
 
-# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return  # пользователь не в команде — дальше не идём
     message = update.effective_message
     if message:
-        await message.reply_text("Здравствуй друг мой. Ты стал частью нашего обителя. Позволь мне тебя сопровождать в твоем грядущем путешествии. Используй заклинание /help чтобы узнать на что ты способен")
+        main_kb = ReplyKeyboardMarkup(
+            [["👤 Профиль", "🔧 Взять задачу"]],
+            resize_keyboard=True
+    )
+    await message.reply_text(
+        "Здравствуй друг мой. Ты стал частью нашего обителя. Позволь мне тебя сопровождать в твоем грядущем путешествии. Используй заклинание /help чтобы узнать на что ты способен",
+        reply_markup=main_kb
+    )
 
-# Команда /help
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return  # пользователь не в команде — дальше не идём
@@ -329,10 +468,6 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("❌ Событие с таким ID не найдено.")
         return
 
-    month_names = {
-        1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
-        7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
-    }
     dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
     simple_time = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
     # Формируем текст уведомления
@@ -478,8 +613,14 @@ async def my_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user.get("user_id") == tg_user_id:
                 text = "📊 <b>Твои баллы и ставки:</b>\n\n"
 
-                points_dict = user.get("points", {})
-                percent_dict = user.get("percent_rate", {})
+                points_dict = user.get("points", {}) or {}
+                if isinstance(points_dict, (int, float)):
+                    points_dict = {"Non-project work": int(points_dict)}
+
+                percent_dict = user.get("percent_rate", {}) or {}
+                if isinstance(percent_dict, (int, float)):
+                    # если раньше хранили числом — размажем одинаково по имеющимся проектам
+                    percent_dict = {k: float(percent_dict) for k in points_dict.keys()}
 
                 for project in points_dict.keys():
                     points = points_dict.get(project, 0)
@@ -535,7 +676,7 @@ async def check_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return  # пользователь не в команде — дальше не идём
-    users = load_json("users.json")
+    users = load_json(USERS_FILE)
     user_id = update.effective_user.id if update.effective_user else None
     user = next((u for u in users if u["user_id"] == user_id), None)
 
@@ -563,8 +704,8 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     project = update.message.text
     context.user_data["project"] = project
 
-    users = load_json("users.json")
-    tasks = load_json("tasks.json")
+    users = load_json(USERS_FILE)
+    tasks = load_json(TASKS_FILE)
     user_id = context.user_data["user_id"]
     user = next((u for u in users if u["user_id"] == user_id), None)
 
@@ -635,9 +776,9 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not task_id or not user_id:
         return await safe_reply(update, context, "⚠️ Не удалось подтвердить выбор")
 
-    tasks = load_json("tasks.json")
-    users = load_json("users.json")
-    events = load_json("events.json")
+    tasks = load_json(TASKS_FILE)
+    users = load_json(USERS_FILE)
+    events = load_json(EVENTS_FILE)
     
     user = next((u for u in users if u["user_id"] == user_id), None)
     reserved = user.get("reserved_tasks", []) if user else []
@@ -700,8 +841,8 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return  # пользователь не в команде — дальше не идём
     user_id = update.effective_user.id
-    users = load_json("users.json")
-    tasks = load_json("tasks.json")
+    users = load_json(USERS_FILE)
+    tasks = load_json(TASKS_FILE)
 
     user = next((u for u in users if u["user_id"] == user_id), None)
     if not user:
@@ -738,8 +879,8 @@ async def search_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return  # пользователь не в команде — дальше не идём
     user_id = update.effective_user.id
-    users = load_json("users.json")
-    tasks = load_json("tasks.json")
+    users = load_json(USERS_FILE)
+    tasks = load_json(TASKS_FILE)
 
     user = next((u for u in users if u["user_id"] == user_id), None)
     if not user or "admin" not in user.get("roles", []) and user.get("role") != "admin":
@@ -795,9 +936,9 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return  # пользователь не в команде — дальше не идём
     user_id = update.effective_user.id if update.effective_user else None
-    users = load_json("users.json")
-    tasks = load_json("tasks.json")
-    events = load_json("events.json")  # допустим, события в отдельном файле
+    users = load_json(USERS_FILE)
+    tasks = load_json(TASKS_FILE)
+    events = load_json(EVENTS_FILE)  # допустим, события в отдельном файле
 
     # Проверка, что вызывающий - админ
     user = next((u for u in users if u["user_id"] == user_id), None)
@@ -970,6 +1111,51 @@ async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ ID события должен быть числом.")
     except Exception as e:
         await update.message.reply_text(f"❌ Произошла ошибка: {e}")
+
+async def profile_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    tg_user = update.effective_user
+    if not tg_user:
+        return
+    user_record = get_user_by_id(tg_user.id)
+    if not user_record:
+        await safe_reply(update, context, "⚠️ Не найден в реестре империи.")
+        return
+
+    text = format_profile_text(tg_user, user_record)
+    await safe_reply(update, context, text, markup=profile_root_kb())
+
+async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    tg_user = update.effective_user
+    if not tg_user:
+        return
+    user_record = get_user_by_id(tg_user.id)
+    if not user_record:
+        await query.edit_message_text("⚠️ Не найден в реестре империи.")
+        return
+
+    data = query.data
+    if data == "pf:back":
+        await query.edit_message_text(
+            format_profile_text(tg_user, user_record),
+            reply_markup=profile_root_kb(),
+            parse_mode=ParseMode.HTML
+        )
+        return
+
+    if data == "pf:points":
+        text = build_points_text_for_user(user_record)
+    elif data == "pf:work":
+        text = build_work_text_for_user(tg_user.id)
+    elif data == "pf:events":
+        text = build_events_text_for_user(tg_user.id)
+    else:
+        text = "Неизвестный раздел."
+
+    await query.edit_message_text(text, reply_markup=profile_back_kb(), parse_mode=ParseMode.HTML)
 
 async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -1304,41 +1490,6 @@ async def show_all_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_user_membership(update, context):
-        return
-
-    user = update.effective_user
-    if not user or user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
-        return
-
-    if not context.args or len(context.args) < 1:
-        await update.message.reply_text(
-            "⚠️ Используй так: /delete_event <ID события>\nПример: /delete_event 2"
-        )
-        return
-
-    try:
-        event_id = int(context.args[0])
-        events = load_json(EVENTS_FILE)
-        event = next((e for e in events if e["id"] == event_id), None)
-
-        if not event:
-            await update.message.reply_text(f"❌ Событие с ID #{event_id} не найдено.")
-            return
-
-        # Удаляем событие
-        events = [e for e in events if e["id"] != event_id]
-        save_json(EVENTS_FILE, events)
-
-        await update.message.reply_text(f"✅ Событие \"{event['title']}\" (ID #{event_id}) успешно удалено.")
-
-    except ValueError:
-        await update.message.reply_text("❌ ID события должен быть числом.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Произошла ошибка: {e}")
-
 def get_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("get_task", get_task_start)],
@@ -1365,6 +1516,7 @@ app = ApplicationBuilder().token("7833612109:AAGfBTL2pn5WqDoWLwFYA1cZBd-XF7VzJ_o
 app.bot.set_my_commands([
     BotCommand("start", "Моё приветствие"),
     BotCommand("help", "Все твои доступные заклинания"),
+    BotCommand("profile", "Открыть профиль"),
     BotCommand("upcoming_events", "Посмотреть грядущие события"),
     BotCommand("my_points", "Увидеть свои баллы"),
     BotCommand("my_task", "Посмотреть свои задачи"),
@@ -1374,6 +1526,9 @@ job_queue = app.job_queue
 job_queue.run_repeating(event_auto_notify, interval=300, first=10)
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
+app.add_handler(MessageHandler(filters.Regex(r"^👤 Профиль$"), profile_entry))
+app.add_handler(CommandHandler("profile", profile_entry))
+app.add_handler(CallbackQueryHandler(profile_callback, pattern=r"^pf:"))
 app.add_handler(CommandHandler("admin_help", admin_help))
 app.add_handler(CommandHandler("add_event", add_event))
 app.add_handler(CommandHandler("notify", notify))
@@ -1391,6 +1546,5 @@ app.add_handler(CommandHandler("unassign_task", unassign_task))
 app.add_handler(CommandHandler("assign_task", assign_task_to_user))
 app.add_handler(CommandHandler("broadcast", broadcast_message))
 app.add_handler(CommandHandler("show_all_events", show_all_events))
-app.add_handler(CommandHandler("delete_event", delete_event))
 app.add_handler(get_task_handler())
 app.run_polling()

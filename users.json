@@ -5,10 +5,10 @@
     "full_name": "Admin",
     "role": "admin",
     "points": {
-      "Starky Jungle": 336,
-      "Ideal Abyss": 0,
+      "Starky Jungle": 258,
+      "Ideal Abyss": 50,
       "Unsouled": 0,
-      "Non-project work": 0
+      "Non-project work": 134
     },
     "percent_rate": {
       "Starky Jungle": 0.0,
@@ -18,26 +18,31 @@
     },
     "reserved_tasks": [],
     "roles": [
-      "программирование",
       "геймдизайн",
-      "сценарий и текст",
+      "сценарий и нарратив",
+      "3Д-арт",
+      "анимация",
+      "программирование",
+      "тестирование",
+      "документация",
+      "финансы и юридические вопросы",
       "маркетинг и PR",
-      "менеджмент",
-      "финансы",
-      "документация"
-    ]
+      "управление"
+    ],
+    "joined_at": "2017-12-11"
   },
   {
     "user_id": 23434443434,
     "username": "Franky126866",
     "full_name": "Test",
     "role": "member",
-    "points": 0,
-    "percent_rate": 0,
+    "points": { "Non-project work": 0 },
+    "percent_rate": { "Non-project work": 0.0 },
     "reserved_tasks": [],
     "roles": [
       "визуальная работа"
-    ]
+    ],
+    "joined_at": "2017-12-11"
   },
   {
     "user_id": 980567874,
@@ -45,10 +50,10 @@
     "full_name": "T'leer",
     "role": "member",
     "points": {
-      "Starky Jungle": 88,
-      "Ideal Abyss": 25,
+      "Starky Jungle": 50,
+      "Ideal Abyss": 84,
       "Unsouled": 0,
-      "Non-project work": 10
+      "Non-project work": 39
     },
     "percent_rate": {
       "Starky Jungle": 0.0,
@@ -58,12 +63,13 @@
     },
     "reserved_tasks": [],
     "roles": [
-      "программирование",
+      "документация",
+      "сценарий и нарратив",
       "геймдизайн",
-      "сценарий и текст",
-      "менеджмент",
-      "документация"
-    ]
+      "программирование"
+    ],
+    "joined_at": "2018-03",
+    "joined_precision": "month"
   },
   {
     "user_id": 5225411186,
@@ -71,8 +77,8 @@
     "full_name": "Makarena",
     "role": "member",
     "points": {
-      "Starky Jungle": 148,
-      "Ideal Abyss": 0,
+      "Starky Jungle": 128,
+      "Ideal Abyss": 13,
       "Unsouled": 0,
       "Non-project work": 0
     },
@@ -84,9 +90,11 @@
     },
     "reserved_tasks": [],
     "roles": [
-      "визуальная работа",
-      "анимация"
-    ]
+      "2Д-арт",
+      "анимация",
+      "3Д-арт"
+    ],
+    "joined_at": "2018-05-07"
   },
   {
     "user_id": 5312096204,
@@ -94,8 +102,8 @@
     "full_name": "TM_PIX",
     "role": "member",
     "points": {
-      "Starky Jungle": 214,
-      "Ideal Abyss": 0,
+      "Starky Jungle": 162,
+      "Ideal Abyss": 47,
       "Unsouled": 0,
       "Non-project work": 0
     },
@@ -107,10 +115,12 @@
     },
     "reserved_tasks": [],
     "roles": [
-      "визуальная работа",
-      "анимация",
-      "музыка и аудио"
-    ]
+      "2Д-арт",
+      "аудио",
+      "тестирование"
+    ],
+    "joined_at": "2018-10",
+    "joined_precision": "month"
   },
   {
     "user_id": 1886915599,
@@ -118,8 +128,8 @@
     "full_name": "Pavel",
     "role": "member",
     "points": {
-      "Starky Jungle": 15,
-      "Ideal Abyss": 0,
+      "Starky Jungle": 63,
+      "Ideal Abyss": 18,
       "Unsouled": 0,
       "Non-project work": 0
     },
@@ -133,7 +143,9 @@
     "roles": [
       "cценарий и текст",
       "маркетинг и PR"
-    ]
+    ],
+    "joined_at": "2020-04",
+    "joined_precision": "month"
   },
   {
     "user_id": 5599406978,
@@ -141,8 +153,8 @@
     "full_name": "Lex",
     "role": "member",
     "points": {
-      "Starky Jungle": 5,
-      "Ideal Abyss": 0,
+      "Starky Jungle": 0,
+      "Ideal Abyss": 55,
       "Unsouled": 0,
       "Non-project work": 0
     },
@@ -157,6 +169,7 @@
       "cценарий и текст",
       "маркетинг и PR",
       "геймдизайн"
-    ]
+    ],
+    "joined_at": "2017-12-11"
   }
 ]
