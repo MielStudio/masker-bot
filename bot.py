@@ -1,7 +1,8 @@
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
-    ConversationHandler, MessageHandler, filters, JobQueue, CallbackQueryHandler
+    ConversationHandler, MessageHandler, filters, JobQueue, CallbackQueryHandler,
+    Application
 )
 from telegram.constants import ParseMode
 import json
@@ -1696,17 +1697,18 @@ def get_task_handler():
         allow_reentry=True
     )
 
+async def post_init(app: Application) -> None:
+    await app.bot.set_my_commands([
+        BotCommand("start", "Моё приветствие"),
+        BotCommand("help", "Все твои доступные заклинания"),
+        BotCommand("upcoming_events", "Посмотреть грядущие события"),
+        BotCommand("my_points", "Увидеть свои баллы"),
+        BotCommand("my_task", "Посмотреть свои задачи"),
+        BotCommand("get_task", "Взять новую задачу"),
+    ])
 
-app = ApplicationBuilder().token("7833612109:AAGfBTL2pn5WqDoWLwFYA1cZBd-XF7VzJ_o").build()
-app.bot.set_my_commands([
-    BotCommand("start", "Моё приветствие"),
-    BotCommand("help", "Все твои доступные заклинания"),
-    BotCommand("profile", "Открыть профиль"),
-    BotCommand("upcoming_events", "Посмотреть грядущие события"),
-    BotCommand("my_points", "Увидеть свои баллы"),
-    BotCommand("my_task", "Посмотреть свои задачи"),
-    BotCommand("get_task", "Взять новую задачу"),
-])
+
+app = ApplicationBuilder().token("7833612109:AAGfBTL2pn5WqDoWLwFYA1cZBd-XF7VzJ_o").post_init(post_init).build()
 job_queue = app.job_queue
 job_queue.run_repeating(event_auto_notify, interval=300, first=10)
 
