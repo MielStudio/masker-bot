@@ -68,6 +68,29 @@ ROLE_SYNONYMS = {
     "аудио": "audio",
 }
 
+# ======== IDLE REMINDER SETTINGS ========
+IDLE_REMINDER_DAYS = 3  # раз в сколько дней можно пинговать «безработных»
+IDLE_REMINDER_START_DELAY_SEC = 300  # через сколько секунд после старта запустить первую проверку
+# =======================================
+
+def _active_tasks_count(user_id: int, tasks: list[dict]) -> int:
+    return sum(1 for t in tasks if t.get("reserved_by") == user_id)
+
+def _need_idle_ping(user: dict, now: datetime) -> bool:
+    """
+    True, если пользователя можно пинговть как 'без задач':
+    - нет активных задач
+    - не пинговали последние IDLE_REMINDER_DAYS
+    """
+    last = user.get("last_idle_reminder")
+    if not last:
+        return True
+    try:
+        last_dt = datetime.fromisoformat(last)
+    except Exception:
+        return True
+    return (now - last_dt) >= timedelta(days=IDLE_REMINDER_DAYS)
+
 def _guess_role_id(name: str) -> str | None:
     s = (name or "").lower()
     for key, rid in ROLE_SYNONYMS.items():
@@ -552,6 +575,54 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
         save_json(EVENTS_FILE, events)
         save_json(TASKS_FILE, tasks)
         save_json(USERS_FILE, users)
+
+async def idle_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+    users = load_json(USERS_FILE)
+    tasks = load_json(TASKS_FILE)
+    now = datetime.now(WORK_TZ)
+
+    changed = False
+    for u in users:
+        uid = u.get("user_id")
+        if not uid:
+            continue
+        # (опционально) не пингуем админа
+        if uid == ADMIN_ID:
+            continue
+
+        has_tasks = _active_tasks_count(uid, tasks) > 0
+        if has_tasks:
+            continue
+        if not _need_idle_ping(u, now):
+            continue
+
+        # Сообщение и быстрая клавиатура на «Взять задачу»
+        text = (
+            "😌 Сейчас у тебя нет активных задач.\n\n"
+            "Можешь взять новую через /get_task или попроси @StanPaige назначить задачу.\n"
+            "Если нужна помощь — напиши."
+        )
+        try:
+            kb = ReplyKeyboardMarkup(
+                [["🔧 Взять задачу", "/get_task"]],
+                resize_keyboard=True, one_time_keyboard=True
+            )
+            await context.bot.send_message(chat_id=uid, text=text, reply_markup=kb)
+            u["last_idle_reminder"] = now.isoformat()
+            changed = True
+        except Exception as e:
+            print(f"❌ Не удалось отправить idle-пинг {u.get('username')}: {e}")
+
+    if changed:
+        save_json(USERS_FILE, users)
+
+async def idle_scan_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+    await idle_reminder_job(context)
+    await update.message.reply_text("✅ Проверка выполнена. Пинги отправлены тем, у кого нет задач.")
 
 async def send_event_notification(event, users, context, when_str):
     dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
@@ -1133,6 +1204,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/broadcast – отправить сообщение всем участникам или одному (@username)\n"
         "/show_all_events – увидеть полный список всех событий\n"
         "/delete_event – удалить событие по ID\n"
+        "/idle_scan_now – вручную запустить проверку бездельников\n"
         # Допиши сюда другие твои админ-команды при необходимости
     )
     await update.message.reply_text(help_text, parse_mode="HTML")
@@ -1699,6 +1771,15 @@ app.bot.set_my_commands([
 ])
 job_queue = app.job_queue
 job_queue.run_repeating(event_auto_notify, interval=300, first=10)
+
+# 🔔 Ежедневная проверка «без задач».
+# Запускаем каждый день, но не чаще чем раз в IDLE_REMINDER_DAYS для каждого пользователя.
+job_queue.run_repeating(
+    idle_reminder_job,
+    interval=24 * 60 * 60,              # раз в сутки сканируем
+    first=IDLE_REMINDER_START_DELAY_SEC # старт через 5 минут после запуска бота
+)
+
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
 app.add_handler(MessageHandler(filters.Regex(r"^👤 Профиль$"), profile_entry))
@@ -1737,5 +1818,6 @@ app.add_handler(CommandHandler("broadcast", broadcast_message))
 app.add_handler(CommandHandler("show_all_events", show_all_events))
 app.add_handler(CommandHandler("calendar", calendar_command))
 app.add_handler(CallbackQueryHandler(calendar_callback, pattern=r"^cal:"))
+app.add_handler(CommandHandler("idle_scan_now", idle_scan_now))
 app.add_handler(get_task_handler())
 app.run_polling()
