@@ -13,6 +13,7 @@ import shlex
 import html
 from handlers.add_event_command import build_add_event_handler
 from handlers.give_points_command import build_give_points_handler
+from handlers.add_task_command import build_add_task_handler
 import calendar as cal
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
@@ -1399,69 +1400,6 @@ async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(text, parse_mode="HTML", reply_markup=back)
         return
 
-async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_user_membership(update, context):
-        return
-
-    user = update.effective_user
-    if not user or user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
-        return
-
-    if not context.args:
-        await update.message.reply_text(
-            "⚠️ Используй так:\n"
-            "<code>/add_task project;title;description;type;points;estimated_days</code>\n\n"
-            "Пример:\n"
-            "<code>/add_task Starky Jungle;Новая механика;Описание механики;программист;20;14</code>",
-            parse_mode="HTML"
-        )
-        return
-
-    try:
-        raw_input = " ".join(context.args)
-        parts = raw_input.split(";")
-        if len(parts) < 6:
-            raise ValueError("Недостаточно параметров")
-
-        project = parts[0].strip()
-        title = parts[1].strip()
-        description = parts[2].strip()
-        task_type = parts[3].strip()
-        points = int(parts[4].strip())
-        estimated_days = int(parts[5].strip())
-
-        tasks = load_json(TASKS_FILE)
-        new_id = max([t["id"] for t in tasks], default=0) + 1
-
-        new_task = {
-            "id": new_id,
-            "project": project,
-            "title": title,
-            "description": description,
-            "type": task_type,
-            "points": points,
-            "estimated_days": estimated_days,
-            "deadline": None,
-            "reserved_by": None
-        }
-
-        tasks.append(new_task)
-        save_json(TASKS_FILE, tasks)
-
-        await update.message.reply_text(
-            f"✅ Задача добавлена:\n\n"
-            f"<b>{title}</b>\n"
-            f"Проект: {project}\n"
-            f"Роль: {task_type}\n"
-            f"Баллы: {points}\n"
-            f"Оценка: {estimated_days} дн.",
-            parse_mode="HTML"
-        )
-
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-
 async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
@@ -1636,9 +1574,9 @@ async def broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
             "📣 Введите сообщение для рассылки.\n\n"
-            "⚠️ *Сообщение будет отправлено всем участникам команды*\n"
-            "Напишите `отмена`, чтобы отменить рассылку.",
-            parse_mode="MarkdownV2"
+            "⚠️ <b>Сообщение будет отправлено всем участникам команды</b>\n"
+            "Напишите <code>отмена</code>, чтобы отменить рассылку.",
+            parse_mode="HTML"
         )
         return
 
@@ -1811,7 +1749,13 @@ app.add_handler(CommandHandler("search_task", search_task))
 app.add_handler(CommandHandler("task_done", task_done))
 app.add_handler(CommandHandler("edit_deadline", edit_deadline))
 app.add_handler(CommandHandler("delete_event", delete_event))
-app.add_handler(CommandHandler("add_task", add_task))
+app.add_handler(build_add_task_handler(
+    tasks_file=TASKS_FILE,
+    users_file=USERS_FILE,
+    load_json=load_json,
+    save_json=save_json,
+    admin_id=ADMIN_ID,
+))
 app.add_handler(CommandHandler("unassign_task", unassign_task))
 app.add_handler(CommandHandler("assign_task", assign_task_to_user))
 app.add_handler(CommandHandler("broadcast", broadcast_message))
