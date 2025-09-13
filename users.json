@@ -29,6 +29,18 @@
       "маркетинг и PR",
       "управление"
     ],
+    "roles_ext": [
+      {"id": "gamedesign",      "level": 3},
+      {"id": "narrative",       "level": 3},
+      {"id": "art3d",           "level": 1},
+      {"id": "animation",       "level": 1},
+      {"id": "programming",     "level": 3},
+      {"id": "testing",         "level": 2},
+      {"id": "docs",            "level": 3},
+      {"id": "finance_legal",   "level": 2},
+      {"id": "marketing_pr",    "level": 3},
+      {"id": "management",      "level": 3}
+    ],
     "joined_at": "2017-12-11"
   },
   {
@@ -68,6 +80,12 @@
       "геймдизайн",
       "программирование"
     ],
+    "roles_ext": [
+      {"id": "gamedesign",      "level": 1},
+      {"id": "narrative",       "level": 3},
+      {"id": "programming",     "level": 2},
+      {"id": "docs",            "level": 3}
+    ],
     "joined_at": "2018-03",
     "joined_precision": "month"
   },
@@ -94,6 +112,11 @@
       "анимация",
       "3Д-арт"
     ],
+    "roles_ext": [
+      {"id": "art2d",           "level": 3},
+      {"id": "art3d",           "level": 2},
+      {"id": "animation",       "level": 3}
+    ],
     "joined_at": "2018-05-07"
   },
   {
@@ -118,6 +141,11 @@
       "2Д-арт",
       "аудио",
       "тестирование"
+    ],
+    "roles_ext": [
+      {"id": "art2d",           "level": 3},
+      {"id": "testing",         "level": 1},
+      {"id": "audio",            "level": 3}
     ],
     "joined_at": "2018-10",
     "joined_precision": "month"
@@ -144,6 +172,10 @@
       "cценарий и текст",
       "маркетинг и PR"
     ],
+    "roles_ext": [
+      {"id": "narrative",       "level": 2},
+      {"id": "marketing_pr",    "level": 3}
+    ],
     "joined_at": "2020-04",
     "joined_precision": "month"
   },
@@ -169,6 +201,11 @@
       "cценарий и текст",
       "маркетинг и PR",
       "геймдизайн"
+    ],
+    "roles_ext": [
+      {"id": "gamedesign",      "level": 2},
+      {"id": "narrative",       "level": 1},
+      {"id": "marketing_pr",    "level": 1}
     ],
     "joined_at": "2017-12-11"
   }

@@ -26,6 +26,73 @@ month_names = {
 
 WORK_TZ = ZoneInfo("Europe/Kyiv")
 
+ROLE_CATALOG = {
+    "gamedesign":    ("Геймдизайн", "🎮"),
+    "narrative":     ("Сценарий и нарратив", "🖋️"),
+    "art3d":         ("3D-арт", "🧊"),
+    "art2d":         ("2D-арт", "🎨"),
+    "animation":     ("Анимация", "🎞️"),
+    "programming":   ("Программирование", "💻"),
+    "testing":       ("Тестирование", "🧪"),
+    "docs":          ("Документация", "📚"),
+    "finance_legal": ("Финансы и юр. вопросы", "⚖️"),
+    "marketing_pr":  ("Маркетинг и PR", "📣"),
+    "management":    ("Управление", "🧭"),
+    "audio":         ("Аудио", "🎵")
+}
+
+# Простые синонимы для автоподборки id из старых строк roles
+ROLE_SYNONYMS = {
+    "геймдизайн": "gamedesign",
+    "нарратив": "narrative", "сценарий": "narrative",
+    "3д": "art3d", "3d": "art3d", "3д-арт": "art3d",
+    "2д": "art2d", "2d": "art2d", "2д-арт": "art2d", "визуальная работа": "visual",
+    "анимация": "animation",
+    "программирование": "programming",
+    "тестирование": "testing",
+    "документация": "docs",
+    "финансы": "finance_legal", "юридические": "finance_legal",
+    "маркетинг": "marketing_pr", "pr": "marketing_pr",
+    "управление": "management",
+    "аудио": "audio",
+}
+
+def _guess_role_id(name: str) -> str | None:
+    s = (name or "").lower()
+    for key, rid in ROLE_SYNONYMS.items():
+        if key in s:
+            return rid
+    return None
+
+def _stars(level: int) -> str:
+    lvl = max(1, min(3, int(level or 1)))
+    return "★" * lvl + "☆" * (3 - lvl)  # 1..3 звёзд, остальное пустыми
+
+def _normalize_user_roles(user_record: dict):
+    """
+    Возвращает список элементов вида (title, emoji, level),
+    читая либо roles_ext, либо старый roles.
+    """
+    items = []
+    ext = user_record.get("roles_ext")
+    if isinstance(ext, list) and ext:
+        for r in ext:
+            rid = r.get("id")
+            level = r.get("level", 2)
+            title, emoji = ROLE_CATALOG.get(rid, (rid or "—", "•"))
+            items.append((title, emoji, level))
+        return items
+
+    # Фолбэк: старый список строк roles
+    for name in (user_record.get("roles") or []):
+        rid = _guess_role_id(name)
+        if rid and rid in ROLE_CATALOG:
+            title, emoji = ROLE_CATALOG[rid]
+        else:
+            title, emoji = (name, "•")
+        items.append((title, emoji, 2))  # дефолтный уровень
+    return items
+
 async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = load_json(USERS_FILE)
     user_id = update.effective_user.id if update.effective_user else None
@@ -145,29 +212,32 @@ def save_json(path, data):
 
 def format_profile_text(tg_user, user_record) -> str:
     full_name = user_record.get("full_name") or (tg_user.full_name if tg_user else "Без имени")
-    # роли могут быть в 'roles' (list) или 'role' (str)
-    roles = user_record.get("roles")
-    if isinstance(roles, list):
-        roles_str = ", ".join(roles)
-    elif isinstance(roles, str):
-        roles_str = roles
-    else:
-        roles_str = "—"
 
+    # === НОВОЕ: красивый список должностей ===
+    role_items = _normalize_user_roles(user_record)
+    if role_items:
+        roles_block = "\n".join(
+            f"{emoji} <b>{html.escape(title)}</b>  {_stars(level)}"
+            for (title, emoji, level) in role_items
+        )
+    else:
+        roles_block = "—"
+
+    # Дата вступления (оставляем как было)
     joined_at = user_record.get("joined_at")
     if joined_at:
         try:
             dt = datetime.fromisoformat(joined_at)
             joined_str = format_date_only_rus(dt)
         except:
-            joined_str = joined_at  # как есть, если формат нестандартный
+            joined_str = joined_at
     else:
         joined_str = "—"
 
     return (
         "<b>👤 Профиль</b>\n\n"
         f"Имя: <b>{html.escape(full_name)}</b>\n"
-        f"Должности: <b>{html.escape(roles_str)}</b>\n"
+        f"Должности:\n{roles_block}\n"
         f"Официально в команде с: <b>{joined_str}</b>\n\n"
         "Выбери нужный раздел ниже:"
     )
