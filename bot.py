@@ -6,8 +6,6 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 import json
 import os
-from db import AsyncSessionLocal  # новый импорт
-from models import Task, Event, Project  # что нужно из моделей
 from datetime import datetime, timedelta
 import re
 from zoneinfo import ZoneInfo
