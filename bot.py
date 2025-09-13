@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import shlex
 import html
 from handlers.add_event_command import build_add_event_handler
+import calendar as cal
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "tasks.json")
@@ -26,6 +27,11 @@ EV_TYPE, EV_TITLE, EV_DESC, EV_DATE, EV_TIME, EV_PERSONAL, EV_USERS, EV_CONFIRM 
 month_names = {
     1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
     7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
+}
+
+MONTHS_NOM = {
+    1:"Январь",2:"Февраль",3:"Март",4:"Апрель",5:"Май",6:"Июнь",
+    7:"Июль",8:"Август",9:"Сентябрь",10:"Октябрь",11:"Ноябрь",12:"Декабрь"
 }
 
 WORK_TZ = ZoneInfo("Europe/Kyiv")
@@ -366,6 +372,100 @@ def build_events_text_for_user(user_id: int) -> str:
         when = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
         out.append(f"• <b>{html.escape(e['title'])}</b>\n  🕒 {when}\n  {html.escape(e.get('description',''))}\n")
     return "\n".join(out).strip()
+
+def _user_future_events_for_month(user_id: int, year: int, month: int):
+    """Вернёт словарь {day: [events...]} только будущих событий, доступных пользователю."""
+    events = load_json(EVENTS_FILE)
+    now = datetime.now(WORK_TZ)
+    by_day = {}
+    for e in events:
+        try:
+            dt = datetime.fromisoformat(e["datetime"]).replace(tzinfo=WORK_TZ)
+        except:
+            continue
+        if dt < now:  # только будущее
+            continue
+        if dt.year != year or dt.month != month:
+            continue
+        if e.get("personal") and user_id not in (e.get("users") or []):
+            continue
+        by_day.setdefault(dt.day, []).append((dt, e))
+    # сортируем события внутри каждого дня
+    for d in by_day:
+        by_day[d].sort(key=lambda t: t[0])
+    return by_day
+
+def _calendar_header(year: int, month: int) -> str:
+    return f"📅 <b>{MONTHS_NOM[month]} {year}</b>\n" \
+           "Точки «•» означают, что в этот день есть события.\n" \
+           "Нажми на день, чтобы увидеть подробности."
+
+def _build_month_markup(year: int, month: int, user_id: int) -> InlineKeyboardMarkup:
+    """Рисуем сетку календаря с точками на днях, где есть события."""
+    cal.setfirstweekday(cal.MONDAY)
+    month_matrix = cal.monthcalendar(year, month)  # список недель по 7 дней, пустые дни = 0
+    days_with_events = _user_future_events_for_month(user_id, year, month)
+
+    # 1) Заголовочная строка с навигацией
+    prev_y, prev_m = (year - 1, 12) if month == 1 else (year, month - 1)
+    next_y, next_m = (year + 1, 1)  if month == 12 else (year, month + 1)
+
+    rows = [
+        [
+            InlineKeyboardButton("◀️", callback_data=f"cal:{prev_y}-{prev_m:02d}"),
+            InlineKeyboardButton("Сегодня", callback_data="cal:today"),
+            InlineKeyboardButton("▶️", callback_data=f"cal:{next_y}-{next_m:02d}"),
+        ],
+        [  # заголовки дней недели
+            InlineKeyboardButton(x, callback_data="cal:noop")
+            for x in ("Пн","Вт","Ср","Чт","Пт","Сб","Вс")
+        ]
+    ]
+
+    # 2) Сетка
+    for week in month_matrix:
+        row = []
+        for day in week:
+            if day == 0:
+                row.append(InlineKeyboardButton(" ", callback_data="cal:noop"))
+            else:
+                mark = "•" if day in days_with_events else ""
+                row.append(InlineKeyboardButton(f"{day}{mark}", callback_data=f"cal:{year}-{month:02d}:d{day:02d}"))
+        rows.append(row)
+
+    return InlineKeyboardMarkup(rows)
+
+def _format_day_events_text(user_id: int, year: int, month: int, day: int) -> str:
+    items = _user_future_events_for_month(user_id, year, month).get(day, [])
+    if not items:
+        return "<b>Событий нет</b>"
+
+    lines = [f"<b>📅 {day} {month_names[month]} {year}</b>", ""]
+    for dt, e in items:
+        when = f"{dt.strftime('%H:%M')}"
+        pfx = "📣" if e.get("type") == "meeting" else ("⏰" if e.get("type") == "deadline" else "📝")
+        desc = html.escape(e.get("description","")) or "—"
+        lines.append(f"{pfx} <b>{html.escape(e['title'])}</b>\n🕒 {when}\n{desc}\n")
+    return "\n".join(lines).strip()
+
+def _parse_cal_cb(data: str):
+    """
+    Возвращает ('month', y, m) | ('day', y, m, d) | ('today',) | ('noop',)
+    """
+    if data == "cal:today":
+        return ("today",)
+    if data == "cal:noop":
+        return ("noop",)
+    if data.startswith("cal:"):
+        rest = data[4:]
+        if ":d" in rest:
+            ym, d = rest.split(":d", 1)
+            y, m = map(int, ym.split("-"))
+            return ("day", y, m, int(d))
+        else:
+            y, m = map(int, rest.split("-"))
+            return ("month", y, m)
+    return ("noop",)
 
 async def safe_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
                      text: str, markup=None):
@@ -1220,11 +1320,57 @@ async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "pf:work":
         text = build_work_text_for_user(tg_user.id)
     elif data == "pf:events":
-        text = build_events_text_for_user(tg_user.id)
+        now = datetime.now(WORK_TZ)
+        kb = _build_month_markup(now.year, now.month, tg_user.id)
+        await query.edit_message_text(_calendar_header(now.year, now.month), parse_mode="HTML", reply_markup=kb)
+        return
     else:
         text = "Неизвестный раздел."
 
     await query.edit_message_text(text, reply_markup=profile_back_kb(), parse_mode=ParseMode.HTML)
+
+async def calendar_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    user = update.effective_user
+    if not user:
+        return
+    now = datetime.now(WORK_TZ)
+    kb = _build_month_markup(now.year, now.month, user.id)
+    await update.message.reply_text(
+        _calendar_header(now.year, now.month),
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+async def calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user = q.from_user
+    kind = _parse_cal_cb(q.data)
+    if kind[0] == "noop":
+        return
+
+    if kind[0] == "today":
+        now = datetime.now(WORK_TZ)
+        kb = _build_month_markup(now.year, now.month, user.id)
+        await q.edit_message_text(_calendar_header(now.year, now.month), parse_mode="HTML", reply_markup=kb)
+        return
+
+    if kind[0] == "month":
+        _, y, m = kind
+        kb = _build_month_markup(y, m, user.id)
+        await q.edit_message_text(_calendar_header(y, m), parse_mode="HTML", reply_markup=kb)
+        return
+
+    if kind[0] == "day":
+        _, y, m, d = kind
+        text = _format_day_events_text(user.id, y, m, d)
+        back = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад к календарю", callback_data=f"cal:{y}-{m:02d}")]
+        ])
+        await q.edit_message_text(text, parse_mode="HTML", reply_markup=back)
+        return
 
 async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -1628,5 +1774,7 @@ app.add_handler(CommandHandler("unassign_task", unassign_task))
 app.add_handler(CommandHandler("assign_task", assign_task_to_user))
 app.add_handler(CommandHandler("broadcast", broadcast_message))
 app.add_handler(CommandHandler("show_all_events", show_all_events))
+app.add_handler(CommandHandler("calendar", calendar_command))
+app.add_handler(CallbackQueryHandler(calendar_callback, pattern=r"^cal:"))
 app.add_handler(get_task_handler())
 app.run_polling()
