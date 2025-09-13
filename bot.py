@@ -11,6 +11,7 @@ import re
 from zoneinfo import ZoneInfo
 import shlex
 import html
+from handlers.add_event_command import build_add_event_handler
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "tasks.json")
@@ -18,6 +19,9 @@ USERS_FILE = os.path.join(os.path.dirname(__file__), "users.json")
 ADMIN_ID = 1847178297
 
 SELECT_PROJECT, SELECT_TASK, CONFIRM = range(3)
+
+# добавь РЯДОМ (уникальные числа, чтобы не конфликтовали):
+EV_TYPE, EV_TITLE, EV_DESC, EV_DATE, EV_TIME, EV_PERSONAL, EV_USERS, EV_CONFIRM = range(3, 11)
 
 month_names = {
     1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
@@ -113,6 +117,58 @@ def format_datetime_rus(dt: datetime) -> str:
 
 def format_date_only_rus(dt: datetime) -> str:
     return f"{dt.day} {month_names[dt.month]} {dt.year}"
+
+# Быстрые клавиатуры
+def kb_event_type():
+    return ReplyKeyboardMarkup(
+        [["🧑‍💻 Собрание", "⏰ Дедлайн"], ["📝 Другое"]],
+        resize_keyboard=True, one_time_keyboard=True
+    )
+
+def kb_yes_no():
+    return ReplyKeyboardMarkup([["Да", "Нет"]], resize_keyboard=True, one_time_keyboard=True)
+
+def kb_quick_dates():
+    return ReplyKeyboardMarkup([["Сегодня", "Завтра"], ["Через неделю"]], resize_keyboard=True, one_time_keyboard=True)
+
+def kb_quick_times():
+    return ReplyKeyboardMarkup([["10:00", "14:00"], ["18:00", "20:00"]], resize_keyboard=True, one_time_keyboard=True)
+
+# Парсеры
+DATE_RE_1 = re.compile(r"^\s*(\d{1,2})[.\-/](\d{1,2})(?:[.\-/](\d{4}))?\s*$")
+TIME_RE    = re.compile(r"^\s*(\d{1,2})[:.](\d{2})\s*$")
+
+def parse_date_input(text: str, now: datetime) -> datetime | None:
+    s = (text or "").strip().lower()
+    if s == "сегодня":
+        return now
+    if s == "завтра":
+        return now + timedelta(days=1)
+    if s == "через неделю":
+        return now + timedelta(days=7)
+
+    m = DATE_RE_1.match(s)
+    if m:
+        d, mth, y = int(m.group(1)), int(m.group(2)), m.group(3)
+        y = int(y) if y else now.year
+        try:
+            return datetime(y, mth, d, tzinfo=WORK_TZ)
+        except ValueError:
+            return None
+    return None
+
+def parse_time_input(text: str) -> tuple[int, int] | None:
+    s = (text or "").strip().lower()
+    if s in {"утром","утро"}:   return (10, 0)
+    if s in {"днем","днём"}:    return (14, 0)
+    if s in {"вечером","вечер"}:return (18, 0)
+    m = TIME_RE.match(s)
+    if not m:
+        return None
+    hh, mm = int(m.group(1)), int(m.group(2))
+    if 0 <= hh < 24 and 0 <= mm < 60:
+        return (hh, mm)
+    return None
 
 def get_user_by_id(user_id: int):
     users = load_json(USERS_FILE)
@@ -449,61 +505,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.effective_message
     if message:
         await message.reply_text(help_text, parse_mode="HTML")
-
-async def add_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
-    user = update.effective_user
-    message = update.effective_message
-    if not message or not user:
-        return
-    
-    if user.id != ADMIN_ID:
-        await message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
-        return
-
-    if not context.args:
-        await message.reply_text("⚠️ Используй заклинание так:\n<code>/add_event meeting;Собрание;Описание;2025-06-20T18:00:00</code>", parse_mode="HTML")
-        return
-
-    try:
-        raw_input = " ".join(context.args)
-        parts = raw_input.split(";")
-        if len(parts) < 4:
-            raise ValueError("Недостаточно параметров")
-
-        event_type, title, description, dt_str = parts[:4]
-        datetime_obj = datetime.fromisoformat(dt_str)
-
-        # Загрузка текущих событий
-        if os.path.exists(EVENTS_FILE):
-            with open(EVENTS_FILE, "r", encoding="utf-8") as f:
-                events = json.load(f)
-        else:
-            events = []
-
-        # Новый ID
-        new_id = max([e["id"] for e in events], default=0) + 1
-
-        new_event = {
-            "id": new_id,
-            "type": event_type,
-            "title": title,
-            "description": description,
-            "datetime": dt_str,
-            "notify_users": True
-        }
-
-        events.append(new_event)
-
-        # Сохранение
-        with open(EVENTS_FILE, "w", encoding="utf-8") as f:
-            json.dump(events, f, ensure_ascii=False, indent=2)
-
-        await message.reply_text(f"✅ Я добавил грядущее событие:\n<b>{title}</b> ({event_type})", parse_mode="HTML")
-
-    except Exception as e:
-        await message.reply_text(f"❌ Возникли трудности: {e}")
 
 async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -1560,7 +1561,12 @@ async def show_all_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def get_task_handler():
     return ConversationHandler(
-        entry_points=[CommandHandler("get_task", get_task_start)],
+        entry_points=[
+            CommandHandler("get_task", get_task_start),
+            # кнопка из ReplyKeyboard отправляет именно этот текст:
+            MessageHandler(filters.Regex(r"^(?:🔧\s*Взять задачу|/get_task)$"), get_task_start),
+            # (опционально чуть шире: r"^[🔧🛠️]?\s*Взять задачу$")
+        ],
         states={
             SELECT_PROJECT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, select_project)
@@ -1598,7 +1604,15 @@ app.add_handler(MessageHandler(filters.Regex(r"^👤 Профиль$"), profile_
 app.add_handler(CommandHandler("profile", profile_entry))
 app.add_handler(CallbackQueryHandler(profile_callback, pattern=r"^pf:"))
 app.add_handler(CommandHandler("admin_help", admin_help))
-app.add_handler(CommandHandler("add_event", add_event))
+app.add_handler(build_add_event_handler(
+    admin_id=ADMIN_ID,
+    users_file=USERS_FILE,
+    events_file=EVENTS_FILE,
+    work_tz=WORK_TZ,
+    load_json=load_json,
+    save_json=save_json,
+    format_datetime_rus=format_datetime_rus,
+))
 app.add_handler(CommandHandler("notify", notify))
 app.add_handler(CommandHandler("upcoming_events", upcoming_events))
 app.add_handler(CommandHandler("give_points", give_points))
