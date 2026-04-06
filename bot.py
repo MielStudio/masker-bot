@@ -82,6 +82,13 @@ def with_points_service(func):
     finally:
         db.close()
 
+def create_points_service():
+    db = SessionLocal()
+    repo = UserRepository(db)
+    service = PointsService(repo)
+    service._db = db
+    return service
+
 def _active_tasks_count(user_id: int, tasks: list[dict]) -> int:
     return sum(1 for t in tasks if t.get("reserved_by") == user_id)
 
@@ -1717,10 +1724,7 @@ app.add_handler(CommandHandler("notify", notify))
 app.add_handler(CommandHandler("upcoming_events", upcoming_events))
 app.add_handler(build_give_points_handler(
     admin_id=ADMIN_ID,
-    users_file=USERS_FILE,
-    load_json=load_json,
-    save_json=save_json,
-    recalculate_percent_rates=recalculate_percent_rates,
+    get_points_service=create_points_service,
 ))
 app.add_handler(CommandHandler("my_points", my_points))
 app.add_handler(CommandHandler("check_points", check_points))
