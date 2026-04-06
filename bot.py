@@ -19,6 +19,7 @@ from repositories.task_repository import TaskRepository
 from services.task_service import TaskService
 from repositories.event_repository import EventRepository
 from services.event_service import EventService
+from services.points_service import PointsService
 from handlers.add_event_command import build_add_event_handler
 from handlers.give_points_command import build_give_points_handler
 from handlers.add_task_command import build_add_task_handler
@@ -72,6 +73,14 @@ def with_event_service(func):
     finally:
         db.close()
 
+def with_points_service(func):
+    db = SessionLocal()
+    try:
+        user_repo = UserRepository(db)
+        points_service = PointsService(user_repo)
+        return func(points_service)
+    finally:
+        db.close()
 
 def _active_tasks_count(user_id: int, tasks: list[dict]) -> int:
     return sum(1 for t in tasks if t.get("reserved_by") == user_id)
@@ -228,60 +237,16 @@ def profile_back_kb() -> InlineKeyboardMarkup:
     ])
 
 def recalculate_percent_rates():
-    with open(USERS_FILE, "r", encoding="utf-8") as f:
-        users = json.load(f)
+    def _run(points_service: PointsService):
+        points_service.recalculate_percent_rates()
 
-    # Собираем множество всех проектов
-    projects = set()
-    for u in users:
-        pts = u.get("points", {}) or {}
-        if isinstance(pts, (int, float)):
-            pts = {"Non-project work": int(pts)}
-        projects.update(pts.keys())
+    return with_points_service(_run)
 
-    # Считаем суммы по проектам
-    totals = {p: 0 for p in projects}
-    for u in users:
-        pts = u.get("points", {}) or {}
-        if isinstance(pts, (int, float)):
-            pts = {"Non-project work": int(pts)}
-        for p, v in pts.items():
-            totals[p] += v
+def add_points(user_id: int, points: int, project_name: str = "Non-project work"):
+    def _run(points_service: PointsService):
+        return points_service.add_points(user_id, points, project_name)
 
-    # Записываем доли по каждому проекту
-    for u in users:
-        pts = u.get("points", {}) or {}
-        if isinstance(pts, (int, float)):
-            pts = {"Non-project work": int(pts)}
-        u["percent_rate"] = {}
-        for p in projects:
-            total = totals[p] or 0
-            mine = pts.get(p, 0)
-            u["percent_rate"][p] = (mine / total) if total > 0 else 0.0
-
-    with open(USERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(users, f, ensure_ascii=False, indent=2)
-
-def add_points(user_id: int, points: int):
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            users = json.load(f)
-
-        for user in users:
-            if user["user_id"] == user_id:
-                user["points"] += points
-                break
-        else:
-            print("❌ Пользователь не найден.")
-            return
-
-        with open(USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(users, f, ensure_ascii=False, indent=2)
-
-        recalculate_percent_rates()
-
-    except Exception as e:
-        print(f"❌ Ошибка при добавлении баллов: {e}")
+    return with_points_service(_run)
 
 def load_json(path):
     try:
@@ -340,27 +305,28 @@ def format_profile_text(tg_user, user_record) -> str:
     )
 
 def build_points_text_for_user(user_record) -> str:
-    users = load_json(USERS_FILE)
-    my_points: dict = user_record.get("points", {}) or {}
+    telegram_user_id = user_record.get("user_id")
+    if not telegram_user_id:
+        return "📊 Баллы не найдены."
 
-    # Собираем множество всех проектов
-    all_projects = set()
-    for u in users:
-        for prj in (u.get("points", {}) or {}):
-            all_projects.add(prj)
+    def _run(points_service: PointsService):
+        return points_service.get_user_points_summary(telegram_user_id)
 
-    if not all_projects:
+    summary = with_points_service(_run)
+    if not summary:
+        return "📊 Баллы не найдены."
+
+    projects = summary.get("projects", {})
+    if not projects:
         return "📊 Баллы не найдены."
 
     lines = ["<b>📊 Твои баллы и доля по проектам:</b>", ""]
-    for prj in sorted(all_projects):
-        total = 0
-        for u in users:
-            total += (u.get("points", {}) or {}).get(prj, 0)
+    for project_name in sorted(projects.keys()):
+        item = projects[project_name]
+        points = item.get("points", 0)
+        share = float(item.get("percent_rate", 0.0)) * 100
+        lines.append(f"• <b>{html.escape(project_name)}</b>: {points} балл(ов) ({share:.1f}%)")
 
-        mine = my_points.get(prj, 0)
-        share = (mine / total * 100) if total > 0 else 0.0
-        lines.append(f"• <b>{html.escape(prj)}</b>: {mine} балл(ов) ({share:.1f}%)")
     return "\n".join(lines)
 
 def build_work_text_for_user(user_id: int) -> str:
@@ -805,44 +771,37 @@ async def upcoming_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def my_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
+        return
     if not update.message or not update.effective_user:
         return
 
     tg_user_id = update.effective_user.id
 
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            users = json.load(f)
+    def _run(points_service: PointsService):
+        return points_service.get_user_points_summary(tg_user_id)
 
-        for user in users:
-            if user.get("user_id") == tg_user_id:
-                text = "📊 <b>Твои баллы и ставки:</b>\n\n"
-
-                points_dict = user.get("points", {}) or {}
-                if isinstance(points_dict, (int, float)):
-                    points_dict = {"Non-project work": int(points_dict)}
-
-                percent_dict = user.get("percent_rate", {}) or {}
-                if isinstance(percent_dict, (int, float)):
-                    # если раньше хранили числом — размажем одинаково по имеющимся проектам
-                    percent_dict = {k: float(percent_dict) for k in points_dict.keys()}
-
-                for project in points_dict.keys():
-                    points = points_dict.get(project, 0)
-                    percent = percent_dict.get(project, 0) * 100
-                    text += f"🔹 <b>{project}</b>: {points} баллов ({round(percent)}%)\n"
-                await update.message.reply_text(text, parse_mode="HTML")
-                return
-
+    summary = with_points_service(_run)
+    if not summary:
         await update.message.reply_text("❌ Ты почему то отстутствуешь в системе реестра империи.")
+        return
 
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    projects = summary.get("projects", {})
+    if not projects:
+        await update.message.reply_text("📊 У тебя пока нет баллов.")
+        return
+
+    text = "📊 <b>Твои баллы и ставки:</b>\n\n"
+    for project_name in sorted(projects.keys()):
+        item = projects[project_name]
+        points = item.get("points", 0)
+        percent = float(item.get("percent_rate", 0.0)) * 100
+        text += f"🔹 <b>{project_name}</b>: {points} баллов ({round(percent)}%)\n"
+
+    await update.message.reply_text(text, parse_mode="HTML")
 
 async def check_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
+        return
     if not update.message or not update.effective_user:
         return
 
@@ -856,28 +815,27 @@ async def check_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     username = context.args[0].lstrip("@")
 
-    try:
-        with open(USERS_FILE, "r", encoding="utf-8") as f:
-            users = json.load(f)
+    def _run(points_service: PointsService):
+        return points_service.get_user_points_summary_by_username(username)
 
-        for user in users:
-            if user["username"].lower() == username.lower():
-                text = f"📊 <b>Баллы @{username}:</b>\n\n"
-
-                points_dict = user.get("points", {})
-                percent_dict = user.get("percent_rate", {})
-
-                for project in points_dict.keys():
-                    points = points_dict.get(project, 0)
-                    percent = percent_dict.get(project, 0) * 100
-                    text += f"🔹 <b>{project}</b>: {points} баллов ({round(percent)}%)\n"
-                await update.message.reply_text(text, parse_mode="HTML")
-                return
-
+    summary = with_points_service(_run)
+    if not summary:
         await update.message.reply_text("❌ Пользователь не найден.")
+        return
 
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    projects = summary.get("projects", {})
+    if not projects:
+        await update.message.reply_text(f"📊 У @{username} пока нет баллов.")
+        return
+
+    text = f"📊 <b>Баллы @{username}:</b>\n\n"
+    for project_name in sorted(projects.keys()):
+        item = projects[project_name]
+        points = item.get("points", 0)
+        percent = float(item.get("percent_rate", 0.0)) * 100
+        text += f"🔹 <b>{project_name}</b>: {points} баллов ({round(percent)}%)\n"
+
+    await update.message.reply_text(text, parse_mode="HTML")
 
 async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
