@@ -12,10 +12,13 @@ import re
 from zoneinfo import ZoneInfo
 import shlex
 import html
+from database.db import SessionLocal
+from repositories.user_repository import UserRepository
+from services.user_service import UserService
 from handlers.add_event_command import build_add_event_handler
 from handlers.give_points_command import build_give_points_handler
 from handlers.add_task_command import build_add_task_handler
-from config import ADMIN_ID, WORK_TZ, MONTH_NAMES, MONTHS_NOM, DEFAULT_PROJECTS, ROLE_CATALOG, ROLE_SYNONYMS, IDLE_REMINDER_DAYS, IDLE_REMINDER_START_DELAY_SEC, MAX_ACTIVE_TASKS_PER_USER, MAX_TELEGRAM_MESSAGE_LEN
+from config import *
 import calendar as cal
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
@@ -29,6 +32,15 @@ EV_TYPE, EV_TITLE, EV_DESC, EV_DATE, EV_TIME, EV_PERSONAL, EV_USERS, EV_CONFIRM 
 
 
 # =======================================
+
+def with_user_service(func):
+    db = SessionLocal()
+    try:
+        user_repo = UserRepository(db)
+        user_service = UserService(user_repo)
+        return func(user_service)
+    finally:
+        db.close()
 
 def _active_tasks_count(user_id: int, tasks: list[dict]) -> int:
     return sum(1 for t in tasks if t.get("reserved_by") == user_id)
@@ -85,18 +97,24 @@ def _normalize_user_roles(user_record: dict):
     return items
 
 async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users = load_json(USERS_FILE)
     user_id = update.effective_user.id if update.effective_user else None
     if not user_id:
         return False
 
-    user = next((u for u in users if u["user_id"] == user_id), None)
-    if not user:
-        await update.message.reply_text(
-            "⚠️ Извините, бот работает только с участниками команды.\n"
-            "По вопросам обращайтесь к @StanPaige."
-        )
+    def _run(user_service: UserService):
+        return user_service.is_team_member(user_id)
+
+    is_member = with_user_service(_run)
+
+    if not is_member:
+        target = update.effective_message
+        if target:
+            await target.reply_text(
+                "⚠️ Извините, бот работает только с участниками команды.\n"
+                "По вопросам обращайтесь к @StanPaige."
+            )
         return False
+
     return True
 
 def format_datetime_rus(dt: datetime) -> str:
@@ -158,8 +176,13 @@ def parse_time_input(text: str) -> tuple[int, int] | None:
     return None
 
 def get_user_by_id(user_id: int):
-    users = load_json(USERS_FILE)
-    return next((u for u in users if u.get("user_id") == user_id), None)
+    def _run(user_service: UserService):
+        user = user_service.get_user_by_telegram_id(user_id)
+        if not user:
+            return None
+        return user_service.user_to_legacy_dict(user)
+
+    return with_user_service(_run)
 
 def profile_root_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -483,13 +506,13 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             # За 24 часа
-            if 23 <= delta.total_seconds() / 3600 <= 25 and not event.get("notified_24h"):
+            if REMINDER_24H_MIN_HOURS <= delta.total_seconds() / 3600 <= REMINDER_24H_MAX_HOURS and not event.get("notified_24h"):
                 await send_event_notification(event, users, context, "24")
                 event["notified_24h"] = True
                 changed = True
 
             # За 2 часа
-            if 1.5 <= delta.total_seconds() / 3600 <= 2.5 and not event.get("notified_2h"):
+            if REMINDER_2H_MIN_HOURS <= delta.total_seconds() / 3600 <= REMINDER_2H_MAX_HOURS and not event.get("notified_2h"):
                 await send_event_notification(event, users, context, "2")
                 event["notified_2h"] = True
                 changed = True
@@ -935,7 +958,7 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = next((u for u in users if u["user_id"] == user_id), None)
     reserved = user.get("reserved_tasks", []) if user else []
 
-    if len(reserved) >= 3:
+    if len(reserved) >= MAX_ACTIVE_TASKS_PER_USER:
         await safe_reply(update, context, "⚠️ Ты не можешь иметь более 3 задач одновременно!")
         return ConversationHandler.END
 
