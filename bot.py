@@ -18,6 +18,7 @@ from services.user_service import UserService
 from repositories.task_repository import TaskRepository
 from services.task_service import TaskService
 from repositories.event_repository import EventRepository
+from services.event_service import EventService
 from handlers.add_event_command import build_add_event_handler
 from handlers.give_points_command import build_give_points_handler
 from handlers.add_task_command import build_add_task_handler
@@ -54,13 +55,15 @@ def with_task_service(func):
     finally:
         db.close()
 
-def with_event_repo(func):
+def with_event_service(func):
     db = SessionLocal()
     try:
         event_repo = EventRepository(db)
+        event_service = EventService(event_repo)
         return func(event_repo)
     finally:
         db.close()
+
 
 def _active_tasks_count(user_id: int, tasks: list[dict]) -> int:
     return sum(1 for t in tasks if t.get("reserved_by") == user_id)
@@ -379,50 +382,48 @@ def build_work_text_for_user(user_id: int) -> str:
     return "\n".join(out).strip()
 
 def build_events_text_for_user(user_id: int) -> str:
-    events = load_json(EVENTS_FILE)
     now = datetime.now(WORK_TZ)
-    upcoming = []
-    for e in events:
-        try:
-            dt = datetime.fromisoformat(e["datetime"]).replace(tzinfo=WORK_TZ)
-        except:
-            continue
-        if dt < now:
-            continue
-        if not e.get("personal") or user_id in (e.get("users") or []):
-            upcoming.append((dt, e))
+
+    def _run(event_service: EventService):
+        return event_service.get_upcoming_for_user(user_id, now, limit=5)
+
+    upcoming = with_event_service(_run)
 
     if not upcoming:
         return "📅 Ближайших событий для тебя не найдено."
 
-    upcoming.sort(key=lambda x: x[0])
-    upcoming = upcoming[:5]
     out = ["<b>📅 Твои ближайшие события:</b>", ""]
-    for dt, e in upcoming:
+    for e in upcoming:
+        dt = datetime.fromisoformat(e["datetime"]).replace(tzinfo=WORK_TZ)
         when = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
-        out.append(f"• <b>{html.escape(e['title'])}</b>\n  🕒 {when}\n  {html.escape(e.get('description',''))}\n")
+        out.append(
+            f"• <b>{html.escape(e['title'])}</b>\n"
+            f"  🕒 {when}\n"
+            f"  {html.escape(e.get('description', '') or '')}\n"
+        )
+
     return "\n".join(out).strip()
 
 def _user_future_events_for_month(user_id: int, year: int, month: int):
-    """Вернёт словарь {day: [events...]} только будущих событий, доступных пользователю."""
-    events = load_json(EVENTS_FILE)
     now = datetime.now(WORK_TZ)
+
+    def _run(event_service: EventService):
+        return event_service.get_future_for_month(user_id, year, month, now)
+
+    events = with_event_service(_run)
+
     by_day = {}
     for e in events:
         try:
             dt = datetime.fromisoformat(e["datetime"]).replace(tzinfo=WORK_TZ)
-        except:
+        except Exception:
             continue
-        if dt < now:  # только будущее
-            continue
-        if dt.year != year or dt.month != month:
-            continue
-        if e.get("personal") and user_id not in (e.get("users") or []):
-            continue
+
         by_day.setdefault(dt.day, []).append((dt, e))
-    # сортируем события внутри каждого дня
+
     for d in by_day:
         by_day[d].sort(key=lambda t: t[0])
+
     return by_day
 
 def _calendar_header(year: int, month: int) -> str:
@@ -516,71 +517,65 @@ async def safe_reply(update: Update, context: ContextTypes.DEFAULT_TYPE,
         print("❌ safe_reply error:", e)
 
 async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
-    events = load_json(EVENTS_FILE)
-    users = load_json(USERS_FILE)
-    tasks = load_json(TASKS_FILE)
     now = datetime.now(WORK_TZ)
 
-    changed = False
+    def _for_notifications(event_service: EventService):
+        return event_service.get_events_for_notifications(now)
 
-    for event in events[:]:
+    events = with_event_service(_for_notifications)
+
+    for event in events:
         try:
             dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
-            delta = dt - now
+            delta_hours = delta = (dt - now).total_seconds() / 3600
 
-            if not event.get("notify_users"):
-                continue
+            if REMINDER_24H_MIN_HOURS <= delta_hours <= REMINDER_24H_MAX_HOURS and not event.get("notified_24h"):
+                await send_event_notification(event, context, "24")
+                def _mark24(event_service: EventService):
+                    event_service.mark_notified_24h(event["id"])
+                with_event_service(_mark24)
 
-            # За 24 часа
-            if REMINDER_24H_MIN_HOURS <= delta.total_seconds() / 3600 <= REMINDER_24H_MAX_HOURS and not event.get("notified_24h"):
-                await send_event_notification(event, users, context, "24")
-                event["notified_24h"] = True
-                changed = True
-
-            # За 2 часа
-            if REMINDER_2H_MIN_HOURS <= delta.total_seconds() / 3600 <= REMINDER_2H_MAX_HOURS and not event.get("notified_2h"):
-                await send_event_notification(event, users, context, "2")
-                event["notified_2h"] = True
-                changed = True
-            
-             # ⏰ Проверка истечения события
-            if now >= dt:
-                if event["type"] == "meeting":
-                    # Рассылка о начале собрания
-                    await send_event_message(event, users, context, f"📣 Собрание \"{event['title']}\" началось!")
-                elif event["type"] == "deadline":
-                    # Найти задачу и снять её с пользователя
-                    task_id = event.get("task_id")
-                    if task_id:
-                        for t in tasks:
-                            if t["id"] == task_id:
-                                reserved_by = t.get("reserved_by")
-                                if reserved_by:
-                                    for u in users:
-                                        if reserved_by == u["user_id"]:
-                                            if "reserved_tasks" in u and task_id in u["reserved_tasks"]:
-                                                u["reserved_tasks"].remove(task_id)
-                                t["reserved_by"] = None
-                                t["deadline"] = None
-                                break
-
-                        await send_event_message(event, users, context, 
-                            f"⏰ Дедлайн по задаче \"{event['title']}\" истёк!\n"
-                            "Задача изымается и становится доступной другим участникам.")
-
-                    changed = True
-
-                # Удалить событие из списка
-                events.remove(event)
-                changed = True
+            if REMINDER_2H_MIN_HOURS <= delta_hours <= REMINDER_2H_MAX_HOURS and not event.get("notified_2h"):
+                await send_event_notification(event, context, "2")
+                def _mark2(event_service: EventService):
+                    event_service.mark_notified_2h(event["id"])
+                with_event_service(_mark2)
 
         except Exception as e:
             print(f"❌ Ошибка авто-оповещения: {e}")
 
-    if changed:
-        save_json(EVENTS_FILE, events)
-        save_json(TASKS_FILE, tasks)
-        save_json(USERS_FILE, users)
+    def _expired(event_service: EventService):
+        return event_service.get_started_or_expired(now)
+
+    expired_events = with_event_service(_expired)
+
+    for event in expired_events:
+        try:
+            if event["type"] == "meeting":
+                await send_event_message(event, context, f"📣 Собрание \"{event['title']}\" началось!")
+
+            elif event["type"] == "deadline":
+                task_id = event.get("task_id")
+                if task_id:
+                    def _unassign(task_service: TaskService):
+                        return task_service.unassign_task(task_id)
+
+                    with_task_service(_unassign)
+
+                    await send_event_message(
+                        event,
+                        context,
+                        f"⏰ Дедлайн по задаче \"{event['title']}\" истёк!\n"
+                        "Задача изымается и становится доступной другим участникам."
+                    )
+
+            def _archive(event_service: EventService):
+                event_service.archive(event["id"])
+
+            with_event_service(_archive)
+
+        except Exception as e:
+            print(f"❌ Ошибка обработки истёкшего события: {e}")
 
 async def idle_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     users = load_json(USERS_FILE)
@@ -630,28 +625,54 @@ async def idle_scan_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await idle_reminder_job(context)
     await update.message.reply_text("✅ Проверка выполнена. Пинги отправлены тем, у кого нет задач.")
 
-async def send_event_notification(event, users, context, when_str):
+async def send_event_notification(event, context, when_str):
     dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
     simple_time = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
     event_text = (
         f"⏰ Напоминание! До события <b>{event['title']}</b> осталось {when_str} часа(ов)!\n\n"
         f"🕒 Когда: {simple_time}\n\n"
-        f"{event['description']}"
+        f"{event.get('description') or ''}"
     )
+
+    if event.get("personal"):
+        recipients = event.get("users", [])
+    else:
+        def _users(user_service: UserService):
+            return [
+                user_service.user_to_legacy_dict(u)
+                for u in user_service.user_repo.list_all()
+            ]
+        users = with_user_service(_users)
+        recipients = [u["user_id"] for u in users]
+
     success, failed = 0, 0
-
-    for u in users:
-        if event.get("personal") and u["user_id"] not in event.get("users", []):
-            continue
-
+    for tg_user_id in recipients:
         try:
-            await context.bot.send_message(chat_id=u["user_id"], text=event_text, parse_mode="HTML")
+            await context.bot.send_message(chat_id=tg_user_id, text=event_text, parse_mode="HTML")
             success += 1
         except Exception as e:
             failed += 1
-            print(f"❌ Не удалось отправить {u['full_name']}: {e}")
+            print(f"❌ Не удалось отправить {tg_user_id}: {e}")
 
     print(f"📣 Рассылка по событию #{event['id']} ({when_str}h): Успешно: {success}, Ошибок: {failed}")
+
+async def send_event_message(event, context, text):
+    if event.get("personal"):
+        recipients = event.get("users", [])
+    else:
+        def _users(user_service: UserService):
+            return [
+                user_service.user_to_legacy_dict(u)
+                for u in user_service.user_repo.list_all()
+            ]
+        users = with_user_service(_users)
+        recipients = [u["user_id"] for u in users]
+
+    for tg_user_id in recipients:
+        try:
+            await context.bot.send_message(chat_id=tg_user_id, text=text, parse_mode="HTML")
+        except Exception as e:
+            print(f"❌ Не удалось отправить сообщение {tg_user_id}: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -686,7 +707,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
+        return
+
     user = update.effective_user
     message = update.effective_message
     if not user or not message:
@@ -702,99 +724,74 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     event_id = int(context.args[0])
 
-    # Загрузка события
-    if not os.path.exists(EVENTS_FILE):
-        await message.reply_text("❌ Файл событий не найден.")
-        return
+    def _get(event_service: EventService):
+        return event_service.get_event_by_id(event_id)
 
-    with open(EVENTS_FILE, "r", encoding="utf-8") as f:
-        events = json.load(f)
-
-    event = next((e for e in events if e["id"] == event_id), None)
+    event = with_event_service(_get)
     if not event:
         await message.reply_text("❌ Событие с таким ID не найдено.")
         return
 
     dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
     simple_time = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
-    # Формируем текст уведомления
     event_text = (
         f"📢 <b>{event['title']}</b>\n\n"
         f"🕒 Когда: {simple_time}\n\n"
-        f"{event['description']}"
+        f"{event.get('description') or ''}"
     )
 
-    # Загрузка пользователей
-    if not os.path.exists(USERS_FILE):
-        await message.reply_text("❌ Файл users.json не найден.")
-        return
+    recipients = event.get("users", []) if event.get("personal", False) else [
+        u["user_id"] for u in [get_user_by_id(ADMIN_ID)] if u
+    ]
 
-    with open(USERS_FILE, "r", encoding="utf-8") as f:
-        users = json.load(f)
+    if not event.get("personal", False):
+        # всем участникам команды
+        def _users(user_service: UserService):
+            return [
+                user_service.user_to_legacy_dict(u)
+                for u in user_service.user_repo.list_all()
+            ]
+        users = with_user_service(_users)
+        recipients = [u["user_id"] for u in users]
 
-    # Рассылка
     success, failed = 0, 0
-    for u in users:
+    for tg_user_id in recipients:
         try:
-            # Если событие персональное и пользователь не в списке — пропускаем
-            if event.get("personal", False) and u["user_id"] not in event.get("users", []):
-                continue
-
-            await context.bot.send_message(chat_id=u["user_id"], text=event_text, parse_mode="HTML")
+            await context.bot.send_message(chat_id=tg_user_id, text=event_text, parse_mode="HTML")
             success += 1
         except Exception as e:
             failed += 1
-            print(f"❗ Не удалось отправить {u['full_name']} ({u['user_id']}): {e}")
+            print(f"❗ Не удалось отправить {tg_user_id}: {e}")
 
     await message.reply_text(f"✅ Рассылка завершена.\nУспешно: {success} | Ошибок: {failed}")
 
 async def upcoming_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
+        return
+
     user = update.effective_user
     chat = update.effective_chat
 
     if user is None or chat is None:
         print("❌ update.effective_user или update.effective_chat вернули None")
         return
-    
-    user_id = user.id
-
-    try:
-        with open(EVENTS_FILE, "r", encoding="utf-8") as f:
-            events = json.load(f)
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat.id, text=f"⚠️ Какие то силы мешают мне видеть будущее:\n<code>{e}</code>", parse_mode="HTML")
-        return
 
     now = datetime.now(WORK_TZ)
 
-    # Отбираем события по времени и доступности (общие или персональные с включением юзера)
-    upcoming = []
-    for event in events:
-        try:
-            dt = datetime.fromisoformat(event["datetime"])
-            if dt < now:
-                continue
+    def _run(event_service: EventService):
+        return event_service.get_upcoming_for_user(user.id, now, limit=5)
 
-            is_personal = event.get("personal", False)
-            if not is_personal or (is_personal and user_id in event.get("users", [])):
-                upcoming.append((dt, event))
-        except:
-            continue
-
-    # Сортировка и ограничение до 5 ближайших
-    upcoming.sort(key=lambda e: e[0])
-    upcoming = upcoming[:5]
+    upcoming = with_event_service(_run)
 
     if not upcoming:
         await context.bot.send_message(chat_id=chat.id, text="😌 Видимо в будущем тебя не ждут какие либо события.")
         return
 
     text = "<b>📅 Ближайшие события:</b>\n\n"
-    for dt, event in upcoming:
+    for event in upcoming:
+        dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
         date_str = format_datetime_rus(dt)
-        text += f"📢 <b>{event['title']}</b>\n🕒 {date_str}\n{event['description']}\n\n"
+        text += f"📢 <b>{event['title']}</b>\n🕒 {date_str}\n{event.get('description') or ''}\n\n"
 
     await context.bot.send_message(chat_id=chat.id, text=text.strip(), parse_mode="HTML")
 
@@ -1044,7 +1041,7 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dt_value=task.deadline,
         )
 
-    with_event_repo(_ensure_event)
+    with_event_service(_ensure_event)
 
     context.user_data.pop("confirmed_multiple", None)
 
@@ -1094,12 +1091,8 @@ async def search_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
 
-    user_id = update.effective_user.id if update.effective_user else None
-    if not user_id:
-        return
-
-    user = get_user_by_id(user_id)
-    if not user or ("admin" not in user.get("roles", []) and user.get("role") != "admin"):
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
         await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
         return
 
@@ -1190,7 +1183,7 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def _remove_events(event_repo: EventRepository):
         return event_repo.remove_by_task_id(task_id)
 
-    with_event_repo(_remove_events)
+    with_event_service(_remove_events)
 
     await update.message.reply_text(f"✅ Задача #{task_id} успешно помечена как выполненная.")
 
@@ -1290,7 +1283,7 @@ async def edit_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 dt_value=new_dt,
             )
 
-        with_event_repo(_update_event)
+        with_event_service(_update_event)
 
         await update.message.reply_text(
             f"✅ Дедлайн задачи #{task_id} обновлён!\n"
@@ -1305,7 +1298,7 @@ async def edit_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    
+
     user = update.effective_user
     if not user or user.id != ADMIN_ID:
         await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
@@ -1317,15 +1310,19 @@ async def delete_event(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         event_id = int(context.args[0])
-        events = load_json(EVENTS_FILE)
-        event = next((e for e in events if e["id"] == event_id), None)
 
+        def _get(event_service: EventService):
+            return event_service.get_event_by_id(event_id)
+
+        event = with_event_service(_get)
         if not event:
             await update.message.reply_text(f"❌ Событие с ID #{event_id} не найдено.")
             return
 
-        events = [e for e in events if e["id"] != event_id]
-        save_json(EVENTS_FILE, events)
+        def _delete(event_service: EventService):
+            return event_service.delete_event(event_id)
+
+        with_event_service(_delete)
 
         await update.message.reply_text(f"✅ Событие \"{event['title']}\" (ID #{event_id}) успешно удалено.")
 
@@ -1463,7 +1460,7 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def _remove_events(event_repo: EventRepository):
         return event_repo.remove_by_task_id(task_id)
 
-    removed = with_event_repo(_remove_events)
+    removed = with_event_service(_remove_events)
 
     await update.message.reply_text(
         f"✅ Задача #{task_id} теперь свободна. Удалено связанных событий: {removed}."
@@ -1558,7 +1555,7 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
                 dt_value=task.deadline,
             )
 
-        with_event_repo(_ensure_event)
+        with_event_service(_ensure_event)
 
         await update.message.reply_text(
             f"✅ Задача #{task_id} успешно назначена пользователю @{username}."
@@ -1653,38 +1650,35 @@ async def show_all_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        events = load_json(EVENTS_FILE)
+        def _run(event_service: EventService):
+            return event_service.get_all_events()
+
+        events = with_event_service(_run)
+
         if not events:
             await update.message.reply_text("📭 Список событий пуст.")
             return
 
         now = datetime.now(WORK_TZ)
-
-        # Сортируем по дате и времени
         events_sorted = sorted(events, key=lambda e: e.get("datetime") or "")
 
         msg = "<b>📅 Все события:</b>\n\n"
         for event in events_sorted:
             dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
             status = "✅ Актуально" if dt >= now else "⌛ Уже прошло"
+            personal_str = " (Персональное)" if event.get("personal", False) else ""
 
-            personal_str = ""
-            if event.get("personal", False):
-                personal_str = " (Персональное)"
-            
             msg += (
                 f"🔹 <b>{event['title']}</b>{personal_str}\n"
                 f"🗂️ Тип: {event['type']}\n"
                 f"🕒 Когда: {format_datetime_rus(dt)}\n"
-                f"📄 {event['description']}\n"
+                f"📄 {event.get('description') or ''}\n"
                 f"📌 Статус: {status}\n"
                 f"🆔 ID: {event['id']}\n\n"
             )
 
-        # Если сообщение слишком большое — разбиваем
-        max_len = 4000
-        for i in range(0, len(msg), max_len):
-            await update.message.reply_text(msg[i:i+max_len], parse_mode="HTML")
+        for i in range(0, len(msg), MAX_TELEGRAM_MESSAGE_LEN):
+            await update.message.reply_text(msg[i:i + MAX_TELEGRAM_MESSAGE_LEN], parse_mode="HTML")
 
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {e}")
