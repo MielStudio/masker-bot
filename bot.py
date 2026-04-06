@@ -17,6 +17,7 @@ from repositories.user_repository import UserRepository
 from services.user_service import UserService
 from repositories.task_repository import TaskRepository
 from services.task_service import TaskService
+from repositories.event_repository import EventRepository
 from handlers.add_event_command import build_add_event_handler
 from handlers.give_points_command import build_give_points_handler
 from handlers.add_task_command import build_add_task_handler
@@ -50,6 +51,14 @@ def with_task_service(func):
         task_repo = TaskRepository(db)
         task_service = TaskService(task_repo)
         return func(task_service)
+    finally:
+        db.close()
+
+def with_event_repo(func):
+    db = SessionLocal()
+    try:
+        event_repo = EventRepository(db)
+        return func(event_repo)
     finally:
         db.close()
 
@@ -867,25 +876,37 @@ async def check_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
-    users = load_json(USERS_FILE)
-    user_id = update.effective_user.id if update.effective_user else None
-    user = next((u for u in users if u["user_id"] == user_id), None)
+        return ConversationHandler.END
 
+    user_id = update.effective_user.id if update.effective_user else None
+    if not user_id:
+        return ConversationHandler.END
+
+    user = get_user_by_id(user_id)
     if not user:
         await safe_reply(update, context, "⚠️ Почему тебя нет в реестре империи?")
         return ConversationHandler.END
 
-    reserved = user.get("reserved_tasks", [])
-    if len(reserved) >= MAX_ACTIVE_TASKS_PER_USER:
-        await safe_reply(update, context, f"⚠️ Ты не можешь брать более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно!")
+    def _run(task_service: TaskService):
+        return task_service.count_user_active_tasks(user_id)
+
+    active_tasks_count = with_task_service(_run)
+
+    if active_tasks_count >= MAX_ACTIVE_TASKS_PER_USER:
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Ты не можешь брать более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно!"
+        )
         return ConversationHandler.END
 
-    # Пока только один проект
-    projects = DEFAULT_PROJECTS
     context.user_data["user_id"] = user_id
 
-    markup = ReplyKeyboardMarkup([[p] for p in projects], one_time_keyboard=True, resize_keyboard=True)
+    markup = ReplyKeyboardMarkup(
+        [[p] for p in DEFAULT_PROJECTS],
+        one_time_keyboard=True,
+        resize_keyboard=True
+    )
     await safe_reply(update, context, "🔧 Выберите проект:", markup)
     return SELECT_PROJECT
 
@@ -896,22 +917,20 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     project = update.message.text
     context.user_data["project"] = project
 
-    users = load_json(USERS_FILE)
-    tasks = load_json(TASKS_FILE)
-    user_id = context.user_data["user_id"]
-    user = next((u for u in users if u["user_id"] == user_id), None)
+    user_id = context.user_data.get("user_id")
+    if not user_id:
+        await safe_reply(update, context, "⚠️ Не удалось определить пользователя.")
+        return ConversationHandler.END
 
-    if not user:
-        return await safe_reply(update, context, "⚠️ Кто ты, воин?")
+    user_record = get_user_by_id(user_id)
+    if not user_record:
+        await safe_reply(update, context, "⚠️ Кто ты, воин?")
+        return ConversationHandler.END
 
-    roles = [r.lower() for r in user.get("roles", [])]
+    def _run(task_service: TaskService):
+        return task_service.get_available_tasks_for_user(project, user_record)
 
-    relevant_tasks = [
-        t for t in tasks
-        if t.get("project") == project and
-           t.get("reserved_by") is None and
-           t.get("type", "").lower() in roles
-    ]
+    relevant_tasks = with_task_service(_run)
 
     if not relevant_tasks:
         await safe_reply(update, context, "😔 Сейчас нет доступных миссий для твоей роли")
@@ -929,11 +948,14 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 time_str = f"{weeks} нед. {days} дн."
         else:
             time_str = f"{estimated_days} дн."
-        msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
-                f"📄 {t['description']}\n"
-                f"📂 Тип: {t['type']}\n"
-                f"🏆 Баллы: {t['points']}\n"
-                f"⏰ Примерное время: {time_str}\n\n")
+
+        msg += (
+            f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
+            f"📄 {t['description']}\n"
+            f"📂 Тип: {t['type']}\n"
+            f"🏆 Баллы: {t['points']}\n"
+            f"⏰ Примерное время: {time_str}\n\n"
+        )
 
     await safe_reply(update, context, msg, markup=ReplyKeyboardRemove())
     await safe_reply(update, context, "Введите номер задачи, которую хотите взять")
@@ -966,65 +988,65 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = context.user_data.get("user_id")
 
     if not task_id or not user_id:
-        return await safe_reply(update, context, "⚠️ Не удалось подтвердить выбор")
-
-    tasks = load_json(TASKS_FILE)
-    users = load_json(USERS_FILE)
-    events = load_json(EVENTS_FILE)
-    
-    user = next((u for u in users if u["user_id"] == user_id), None)
-    reserved = user.get("reserved_tasks", []) if user else []
-
-    if len(reserved) >= MAX_ACTIVE_TASKS_PER_USER:
-        await safe_reply(update, context, "⚠️ Ты не можешь иметь более 3 задач одновременно!")
+        await safe_reply(update, context, "⚠️ Не удалось подтвердить выбор")
         return ConversationHandler.END
 
-    # Если уже есть хотя бы 1, но меньше 3 и не было повторного подтверждения
-    if len(reserved) >= 1 and not context.user_data.get("confirmed_multiple"):
+    def _count(task_service: TaskService):
+        return task_service.count_user_active_tasks(user_id)
+
+    active_count = with_task_service(_count)
+
+    if active_count >= MAX_ACTIVE_TASKS_PER_USER:
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Ты не можешь иметь более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно!"
+        )
+        return ConversationHandler.END
+
+    if active_count >= 1 and not context.user_data.get("confirmed_multiple"):
         context.user_data["confirmed_multiple"] = True
-        await safe_reply(update, context,
+        await safe_reply(
+            update,
+            context,
             "⚠️ Ты берешь ещё одну задачу.\n"
             "Будь осторожен: более одной задачи может усложнить твою работу.\n"
             "Ты точно уверен? Напиши ещё раз 'да' чтобы подтвердить."
         )
         return CONFIRM
-    
-    deadline = None
-    for task in tasks:
-        if task["id"] == task_id:
-            task["reserved_by"] = user_id
 
-            # Если дедлайна нет, генерируем его
-            if not task.get("deadline"):
-                estimated_days = task.get("estimated_days", 7)
-                new_deadline = datetime.now(WORK_TZ) + timedelta(days=estimated_days)
-                task["deadline"] = new_deadline.isoformat()
-                deadline = task["deadline"]
-            else:
-                deadline = task["deadline"]
-            break
+    def _assign(task_service: TaskService):
+        return task_service.assign_task_with_auto_deadline(task_id, user_id, WORK_TZ)
 
-    for user in users:
-        if user["user_id"] == user_id:
-            user.setdefault("reserved_tasks", []).append(task_id)
-            break
+    task = with_task_service(_assign)
 
-    if deadline:
-        events.append({
-            "id": max([e["id"] for e in events], default=0) + 1,
-            "type": "deadline",
-            "title": f"Дедлайн по задаче #{task_id}",
-            "description": "Пожалуйста, завершите работу в срок.",
-            "datetime": deadline,
-            "notify_users": True,
-            "personal": True,
-            "users": [user_id],
-            "task_id": task_id
-        })
+    if not task:
+        await safe_reply(update, context, f"⚠️ Задача #{task_id} не найдена или недоступна.")
+        return ConversationHandler.END
 
-    save_json("tasks.json", tasks)
-    save_json("users.json", users)
-    save_json("events.json", events)
+    # создаём deadline event, если его ещё нет
+    def _ensure_event(event_repo):
+        existing = event_repo.get_by_task_id(task_id)
+        if existing:
+            return existing
+
+        next_id = 1
+        all_events = event_repo.list_all()
+        if all_events:
+            next_id = max(e.id for e in all_events) + 1
+
+        return event_repo.create_deadline_event(
+            event_id=next_id,
+            task_id=task.id,
+            telegram_user_id=user_id,
+            title=f"Дедлайн по задаче #{task.id}",
+            description="Пожалуйста, завершите работу в срок.",
+            dt_value=task.deadline,
+        )
+
+    with_event_repo(_ensure_event)
+
+    context.user_data.pop("confirmed_multiple", None)
 
     await safe_reply(update, context, "✅ Миссия принадлежит теперь вам. Проявите себя достойно!")
     return ConversationHandler.END
@@ -1070,30 +1092,33 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def search_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
-    user_id = update.effective_user.id
-    users = load_json(USERS_FILE)
-    tasks = load_json(TASKS_FILE)
+        return
 
-    user = next((u for u in users if u["user_id"] == user_id), None)
-    if not user or "admin" not in user.get("roles", []) and user.get("role") != "admin":
+    user_id = update.effective_user.id if update.effective_user else None
+    if not user_id:
+        return
+
+    user = get_user_by_id(user_id)
+    if not user or ("admin" not in user.get("roles", []) and user.get("role") != "admin"):
         await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
         return
 
-    # Обработка параметров команды (аргументы)
-    args = context.args  # список аргументов после /search_task
+    args = context.args
+    filter_name = args[0].lower() if args else None
 
-    filtered_tasks = tasks
+    def _run(task_service: TaskService):
+        tasks = [task_service.task_to_legacy_dict(t) for t in task_service.list_all_tasks()]
 
-    # Например, фильтр по статусу: reserved/unreserved
-    if args:
-        arg = args[0].lower()
-        if arg == "reserved":
-            filtered_tasks = [t for t in tasks if t.get("reserved_by") is not None]
-        elif arg == "unreserved":
-            filtered_tasks = [t for t in tasks if t.get("reserved_by") is None]
-        elif arg == "deadline":
-            filtered_tasks = sorted(tasks, key=lambda t: t.get("deadline") or "")
+        if filter_name == "reserved":
+            return [t for t in tasks if t.get("reserved_by") is not None]
+        if filter_name == "unreserved":
+            return [t for t in tasks if t.get("reserved_by") is None]
+        if filter_name == "deadline":
+            return sorted(tasks, key=lambda t: t.get("deadline") or "")
+
+        return tasks
+
+    filtered_tasks = with_task_service(_run)
 
     if not filtered_tasks:
         await update.message.reply_text("⚠️ Задачи не найдены с указанными параметрами.")
@@ -1103,78 +1128,80 @@ async def search_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for t in filtered_tasks:
         reserved_by = t.get("reserved_by")
         reserved_str = f"Зарезервирована пользователем {reserved_by}" if reserved_by else "Свободна"
+
         estimated_days = t.get("estimated_days", 7)
         if estimated_days >= 7:
             weeks = estimated_days // 7
             days = estimated_days % 7
-            if days == 0:
-                time_str = f"{weeks} нед."
-            else:
-                time_str = f"{weeks} нед. {days} дн."
+            time_str = f"{weeks} нед." if days == 0 else f"{weeks} нед. {days} дн."
         else:
             time_str = f"{estimated_days} дн."
-        msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
-                f"📄 {t['description']}\n"
-                f"📂 Тип: {t['type']}\n"
-                f"🏆 Баллы: {t['points']}\n"
-                f"⏰ Примерное время: {time_str}\n"
-                f"📌 Статус: {reserved_str}\n\n")
 
-    # Разбиваем сообщение на части по 4000 символов, чтобы не превышать лимит Телеграма
-    max_len = MAX_TELEGRAM_MESSAGE_LEN
-    for i in range(0, len(msg), max_len):
-        await update.message.reply_text(msg[i:i+max_len], parse_mode="HTML")
+        msg += (
+            f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
+            f"📄 {t['description']}\n"
+            f"📂 Тип: {t['type']}\n"
+            f"🏆 Баллы: {t['points']}\n"
+            f"⏰ Примерное время: {time_str}\n"
+            f"📌 Статус: {reserved_str}\n\n"
+        )
+
+    for i in range(0, len(msg), MAX_TELEGRAM_MESSAGE_LEN):
+        await update.message.reply_text(msg[i:i + MAX_TELEGRAM_MESSAGE_LEN], parse_mode="HTML")
 
 async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
-    user_id = update.effective_user.id if update.effective_user else None
-    users = load_json(USERS_FILE)
-    tasks = load_json(TASKS_FILE)
-    events = load_json(EVENTS_FILE)  # допустим, события в отдельном файле
+        return
 
-    # Проверка, что вызывающий - админ
-    user = next((u for u in users if u["user_id"] == user_id), None)
+    user_id = update.effective_user.id if update.effective_user else None
+    if not user_id:
+        return
+
+    user = get_user_by_id(user_id)
     if not user or ("admin" not in user.get("roles", []) and user.get("role") != "admin"):
         await safe_reply(update, context, "⚠️ У вас нет прав для этой команды.")
         return
 
-    # Проверяем аргументы команды — должен быть ID задачи
     if not context.args or not context.args[0].isdigit():
         await safe_reply(update, context, "⚠️ Укажите ID задачи: /task_done <ID>")
         return
+
     task_id = int(context.args[0])
 
-    # Найдем задачу по ID
-    task = next((t for t in tasks if t["id"] == task_id), None)
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
     if not task:
         await safe_reply(update, context, f"⚠️ Задача #{task_id} не найдена.")
         return
 
-    reserved_by = task.get("reserved_by")
-    tasks = [t for t in tasks if t["id"] != task_id]
-    save_json(TASKS_FILE, tasks)
+    reserved_by = task.assignee.telegram_user_id if task.assignee else None
+    task_title = task.title
 
-    # Удаляем связанные ивенты по task_id (если есть)
-    events = [e for e in events if e.get("task_id") != task_id]
-    save_json(EVENTS_FILE, events)
-    
-    if reserved_by:
-        for u in users:
-            if task_id in u.get("reserved_tasks", []):
-                u["reserved_tasks"].remove(task_id)
-                break
-        save_json(USERS_FILE, users)
+    def _mark_done(task_service: TaskService):
+        return task_service.mark_done(task_id)
 
-    await update.message.reply_text(f"✅ Задача #{task_id} успешно помечена как выполненная и удалена.")
+    updated = with_task_service(_mark_done)
+    if not updated:
+        await safe_reply(update, context, f"⚠️ Не удалось завершить задачу #{task_id}.")
+        return
 
-    # Отправляем уведомление пользователю, если задача была зарезервирована
+    def _remove_events(event_repo: EventRepository):
+        return event_repo.remove_by_task_id(task_id)
+
+    with_event_repo(_remove_events)
+
+    await update.message.reply_text(f"✅ Задача #{task_id} успешно помечена как выполненная.")
+
     if reserved_by:
         try:
             await context.bot.send_message(
                 chat_id=reserved_by,
-                text=(f"🎉 Задача <b>{task['title']}</b> (#{task_id}) "
-                      "помечена как выполненная. Спасибо за вашу работу!"),
+                text=(
+                    f"🎉 Задача <b>{task_title}</b> (#{task_id}) "
+                    "помечена как выполненная. Спасибо за вашу работу!"
+                ),
                 parse_mode="HTML"
             )
         except Exception as e:
@@ -1210,7 +1237,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def edit_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    
+
     user = update.effective_user
     if not user or user.id != ADMIN_ID:
         await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
@@ -1227,42 +1254,43 @@ async def edit_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
         task_id = int(context.args[0])
         new_dt_str = context.args[1]
 
-        # Если дата дана без T, но с пробелом, заменяем
         if " " in new_dt_str:
             new_dt_str = new_dt_str.replace(" ", "T")
 
         new_dt = datetime.fromisoformat(new_dt_str).replace(tzinfo=WORK_TZ)
 
-        tasks = load_json(TASKS_FILE)
-        events = load_json(EVENTS_FILE)
+        def _set_deadline(task_service: TaskService):
+            return task_service.set_deadline(task_id, new_dt)
 
-        task = next((t for t in tasks if t["id"] == task_id), None)
+        task = with_task_service(_set_deadline)
         if not task:
             await update.message.reply_text(f"❌ Задача с ID #{task_id} не найдена.")
             return
 
-        task["deadline"] = new_dt.isoformat()
+        def _update_event(event_repo: EventRepository):
+            existing = event_repo.update_deadline_event(task_id, new_dt)
+            if existing:
+                return existing
 
-        # Обновляем событие или создаём новое
-        event = next((e for e in events if e.get("task_id") == task_id), None)
-        if event:
-            event["datetime"] = new_dt.isoformat()
-        else:
-            new_event = {
-                "id": max([e["id"] for e in events], default=0) + 1,
-                "type": "deadline",
-                "title": f"Дедлайн по задаче #{task_id}",
-                "description": "Обновлён администратором.",
-                "datetime": new_dt.isoformat(),
-                "notify_users": True,
-                "personal": True,
-                "users": [task.get("reserved_by")] if task.get("reserved_by") else [],
-                "task_id": task_id
-            }
-            events.append(new_event)
+            next_id = 1
+            all_events = event_repo.list_all()
+            if all_events:
+                next_id = max(e.id for e in all_events) + 1
 
-        save_json(TASKS_FILE, tasks)
-        save_json(EVENTS_FILE, events)
+            assignee_tg_id = task.assignee.telegram_user_id if task.assignee else None
+            if assignee_tg_id is None:
+                return None
+
+            return event_repo.create_deadline_event(
+                event_id=next_id,
+                task_id=task_id,
+                telegram_user_id=assignee_tg_id,
+                title=f"Дедлайн по задаче #{task_id}",
+                description="Обновлён администратором.",
+                dt_value=new_dt,
+            )
+
+        with_event_repo(_update_event)
 
         await update.message.reply_text(
             f"✅ Дедлайн задачи #{task_id} обновлён!\n"
@@ -1412,51 +1440,42 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     task_id = int(context.args[0])
 
-    tasks = load_json(TASKS_FILE)
-    users = load_json(USERS_FILE)
-    events = load_json(EVENTS_FILE)
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
 
-    task = next((t for t in tasks if t["id"] == task_id), None)
+    task = with_task_service(_get)
     if not task:
         await update.message.reply_text(f"❌ Задача #{task_id} не найдена.")
         return
 
-    reserved_by = task.get("reserved_by")
+    reserved_by = task.assignee.telegram_user_id if task.assignee else None
+    task_title = task.title
+
     if not reserved_by:
         await update.message.reply_text(f"⚠️ Задача #{task_id} уже свободна.")
         return
 
-    # Найти пользователя и убрать задачу из его списка
-    for u in users:
-        if u["user_id"] == reserved_by:
-            if "reserved_tasks" in u and task_id in u["reserved_tasks"]:
-                u["reserved_tasks"].remove(task_id)
-            break
+    def _unassign(task_service: TaskService):
+        return task_service.unassign_task(task_id)
 
-    # Обнулить задачу
-    task["reserved_by"] = None
-    task["deadline"] = None
+    with_task_service(_unassign)
 
-    # Удалить связанный дедлайн-ивент
-    old_events = len(events)
-    events = [e for e in events if e.get("task_id") != task_id]
-    removed = old_events - len(events)
+    def _remove_events(event_repo: EventRepository):
+        return event_repo.remove_by_task_id(task_id)
 
-    save_json(TASKS_FILE, tasks)
-    save_json(USERS_FILE, users)
-    save_json(EVENTS_FILE, events)
+    removed = with_event_repo(_remove_events)
 
     await update.message.reply_text(
-        f"✅ Задача #{task_id} теперь свободна. "
-        f"Удалено связанных событий: {removed}."
+        f"✅ Задача #{task_id} теперь свободна. Удалено связанных событий: {removed}."
     )
 
-    # Если хочешь, можно уведомить бывшего исполнителя
     try:
         await context.bot.send_message(
             chat_id=reserved_by,
-            text=(f"⚠️ Задача <b>{task['title']}</b> (#{task_id}) "
-                  "была снята с вас администратором и теперь доступна другим."),
+            text=(
+                f"⚠️ Задача <b>{task_title}</b> (#{task_id}) "
+                "была снята с вас администратором и теперь доступна другим."
+            ),
             parse_mode="HTML"
         )
     except Exception as e:
@@ -1485,71 +1504,74 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
         task_id = int(context.args[0])
         username = context.args[1].lstrip("@").strip().lower()
 
-        tasks = load_json(TASKS_FILE)
-        users = load_json(USERS_FILE)
-        events = load_json(EVENTS_FILE)
+        def _get_user(user_service: UserService):
+            return user_service.get_user_by_telegram_id(
+                get_user_by_id(user.id)["user_id"]
+            )
 
-        task = next((t for t in tasks if t["id"] == task_id), None)
-        if not task:
-            await update.message.reply_text(f"❌ Задача #{task_id} не найдена.")
-            return
+        # ищем назначаемого пользователя
+        def _target(user_service: UserService):
+            user_obj = user_service.user_repo.get_by_username(username)
+            return user_obj
 
-        if task.get("reserved_by"):
-            await update.message.reply_text(f"⚠️ Задача #{task_id} уже назначена.")
-            return
-
-        user_obj = next((u for u in users if u["username"].lower() == username), None)
-        if not user_obj:
+        target_user = with_user_service(_target)
+        if not target_user:
             await update.message.reply_text(f"❌ Пользователь @{username} не найден.")
             return
 
-        # Проставляем резерв
-        user_id = user_obj["user_id"]
-        task["reserved_by"] = user_id
+        def _get_task(task_service: TaskService):
+            return task_service.get_task_by_id(task_id)
 
-        # Генерируем дедлайн, если его ещё нет
-        if not task.get("deadline"):
-            estimated_days = task.get("estimated_days", 7)
-            deadline = datetime.now(WORK_TZ) + timedelta(days=estimated_days)
-            task["deadline"] = deadline.isoformat()
-        else:
-            deadline = datetime.fromisoformat(task["deadline"])
+        task_before = with_task_service(_get_task)
+        if not task_before:
+            await update.message.reply_text(f"❌ Задача #{task_id} не найдена.")
+            return
 
-        # Добавляем задачу в список пользователя
-        user_obj.setdefault("reserved_tasks", []).append(task_id)
+        if task_before.assignee_id is not None:
+            await update.message.reply_text(f"⚠️ Задача #{task_id} уже назначена.")
+            return
 
-        # Добавляем ивент-дедлайн
-        new_event = {
-            "id": max([e["id"] for e in events], default=0) + 1,
-            "type": "deadline",
-            "title": f"Дедлайн по задаче #{task_id}",
-            "description": "Администратор назначил вам задачу.",
-            "datetime": deadline.isoformat(),
-            "notify_users": True,
-            "personal": True,
-            "users": [user_id],
-            "task_id": task_id
-        }
-        events.append(new_event)
+        def _assign(task_service: TaskService):
+            return task_service.assign_task_to_user(task_id, target_user.telegram_user_id, WORK_TZ)
 
-        # Сохраняем изменения
-        save_json(TASKS_FILE, tasks)
-        save_json(USERS_FILE, users)
-        save_json(EVENTS_FILE, events)
+        task = with_task_service(_assign)
+        if not task:
+            await update.message.reply_text(f"❌ Не удалось назначить задачу #{task_id}.")
+            return
+
+        def _ensure_event(event_repo: EventRepository):
+            existing = event_repo.get_by_task_id(task_id)
+            if existing:
+                return existing
+
+            next_id = 1
+            all_events = event_repo.list_all()
+            if all_events:
+                next_id = max(e.id for e in all_events) + 1
+
+            return event_repo.create_deadline_event(
+                event_id=next_id,
+                task_id=task.id,
+                telegram_user_id=target_user.telegram_user_id,
+                title=f"Дедлайн по задаче #{task_id}",
+                description="Администратор назначил вам задачу.",
+                dt_value=task.deadline,
+            )
+
+        with_event_repo(_ensure_event)
 
         await update.message.reply_text(
             f"✅ Задача #{task_id} успешно назначена пользователю @{username}."
         )
 
-        # Отправляем уведомление назначенному пользователю
         try:
             await context.bot.send_message(
-                chat_id=user_id,
+                chat_id=target_user.telegram_user_id,
                 text=(
                     f"📌 Вам назначена новая задача!\n\n"
-                    f"<b>{task['title']}</b> (#{task_id})\n"
-                    f"{html.escape(task['description'])}\n\n"
-                    f"⏰ Дедлайн: {format_datetime_rus(deadline)}"
+                    f"<b>{task.title}</b> (#{task_id})\n"
+                    f"{html.escape(task.description or '')}\n\n"
+                    f"⏰ Дедлайн: {format_datetime_rus(task.deadline)}"
                 ),
                 parse_mode="HTML"
             )

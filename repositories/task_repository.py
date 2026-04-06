@@ -1,6 +1,4 @@
-from __future__ import annotations
-
-from datetime import datetime
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from database.models import Task, User, Role
@@ -55,6 +53,7 @@ class TaskRepository:
     def list_available_for_user_roles(self, project: str, role_codes: list[str]) -> list[Task]:
         q = (
             self.db.query(Task)
+            .outerjoin(Role, Task.required_role_id == Role.id)
             .options(joinedload(Task.required_role))
             .filter(Task.project == project)
             .filter(Task.assignee_id.is_(None))
@@ -62,16 +61,17 @@ class TaskRepository:
         )
 
         if role_codes:
-            q = q.filter(Task.type_code.in_(role_codes))
+            normalized_codes = [c.lower() for c in role_codes if c]
+            q = q.filter(
+                or_(
+                    Task.type_code.in_(normalized_codes),
+                    Role.code.in_(normalized_codes),
+                )
+            )
 
         return q.order_by(Task.id.asc()).all()
 
-    def assign_task(
-        self,
-        task_id: int,
-        telegram_user_id: int,
-        deadline: datetime | None = None,
-    ) -> Task | None:
+    def assign_task(self, task_id: int, telegram_user_id: int, deadline=None) -> Task | None:
         task = self.get_by_id(task_id)
         if not task:
             return None
@@ -102,7 +102,7 @@ class TaskRepository:
         self.db.refresh(task)
         return task
 
-    def set_deadline(self, task_id: int, deadline: datetime | None) -> Task | None:
+    def set_deadline(self, task_id: int, deadline) -> Task | None:
         task = self.get_by_id(task_id)
         if not task:
             return None
@@ -118,7 +118,6 @@ class TaskRepository:
             return None
 
         task.status = "done"
-        task.completed_at = datetime.utcnow()
         self.db.commit()
         self.db.refresh(task)
         return task
