@@ -55,6 +55,14 @@ def with_task_service(func):
     finally:
         db.close()
 
+def with_event_repo(func):
+    db = SessionLocal()
+    try:
+        event_repo = EventRepository(db)
+        return func(event_repo)
+    finally:
+        db.close()
+
 def with_event_service(func):
     db = SessionLocal()
     try:
@@ -1041,7 +1049,7 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             dt_value=task.deadline,
         )
 
-    with_event_service(_ensure_event)
+    with_event_repo(_ensure_event)
 
     context.user_data.pop("confirmed_multiple", None)
 
@@ -1183,7 +1191,7 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def _remove_events(event_repo: EventRepository):
         return event_repo.remove_by_task_id(task_id)
 
-    with_event_service(_remove_events)
+    with_event_repo(_remove_events)
 
     await update.message.reply_text(f"✅ Задача #{task_id} успешно помечена как выполненная.")
 
@@ -1283,7 +1291,7 @@ async def edit_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 dt_value=new_dt,
             )
 
-        with_event_service(_update_event)
+        with_event_repo(_update_event)
 
         await update.message.reply_text(
             f"✅ Дедлайн задачи #{task_id} обновлён!\n"
@@ -1460,7 +1468,7 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def _remove_events(event_repo: EventRepository):
         return event_repo.remove_by_task_id(task_id)
 
-    removed = with_event_service(_remove_events)
+    removed = with_event_repo(_remove_events)
 
     await update.message.reply_text(
         f"✅ Задача #{task_id} теперь свободна. Удалено связанных событий: {removed}."
@@ -1555,7 +1563,7 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
                 dt_value=task.deadline,
             )
 
-        with_event_service(_ensure_event)
+        with_event_repo(_ensure_event)
 
         await update.message.reply_text(
             f"✅ Задача #{task_id} успешно назначена пользователю @{username}."
