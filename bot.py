@@ -60,7 +60,7 @@ def with_event_service(func):
     try:
         event_repo = EventRepository(db)
         event_service = EventService(event_repo)
-        return func(event_repo)
+        return func(event_service)
     finally:
         db.close()
 
