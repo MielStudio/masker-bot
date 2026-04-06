@@ -15,64 +15,19 @@ import html
 from handlers.add_event_command import build_add_event_handler
 from handlers.give_points_command import build_give_points_handler
 from handlers.add_task_command import build_add_task_handler
+from config import ADMIN_ID, WORK_TZ, MONTH_NAMES, MONTHS_NOM, DEFAULT_PROJECTS, ROLE_CATALOG, ROLE_SYNONYMS, IDLE_REMINDER_DAYS, IDLE_REMINDER_START_DELAY_SEC, MAX_ACTIVE_TASKS_PER_USER, MAX_TELEGRAM_MESSAGE_LEN
 import calendar as cal
 
 EVENTS_FILE = os.path.join(os.path.dirname(__file__), "events.json")
 TASKS_FILE = os.path.join(os.path.dirname(__file__), "tasks.json")
 USERS_FILE = os.path.join(os.path.dirname(__file__), "users.json")
-ADMIN_ID = 1847178297
 
 SELECT_PROJECT, SELECT_TASK, CONFIRM = range(3)
 
 # добавь РЯДОМ (уникальные числа, чтобы не конфликтовали):
 EV_TYPE, EV_TITLE, EV_DESC, EV_DATE, EV_TIME, EV_PERSONAL, EV_USERS, EV_CONFIRM = range(3, 11)
 
-month_names = {
-    1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
-    7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"
-}
 
-MONTHS_NOM = {
-    1:"Январь",2:"Февраль",3:"Март",4:"Апрель",5:"Май",6:"Июнь",
-    7:"Июль",8:"Август",9:"Сентябрь",10:"Октябрь",11:"Ноябрь",12:"Декабрь"
-}
-
-WORK_TZ = ZoneInfo("Europe/Kyiv")
-
-ROLE_CATALOG = {
-    "gamedesign":    ("Геймдизайн", "🎮"),
-    "narrative":     ("Сценарий и нарратив", "🖋️"),
-    "art3d":         ("3D-арт", "🧊"),
-    "art2d":         ("2D-арт", "🎨"),
-    "animation":     ("Анимация", "🎞️"),
-    "programming":   ("Программирование", "💻"),
-    "testing":       ("Тестирование", "🧪"),
-    "docs":          ("Документация", "📚"),
-    "finance_legal": ("Финансы и юр. вопросы", "⚖️"),
-    "marketing_pr":  ("Маркетинг и PR", "📣"),
-    "management":    ("Управление", "🧭"),
-    "audio":         ("Аудио", "🎵")
-}
-
-# Простые синонимы для автоподборки id из старых строк roles
-ROLE_SYNONYMS = {
-    "геймдизайн": "gamedesign",
-    "нарратив": "narrative", "сценарий": "narrative",
-    "3д": "art3d", "3d": "art3d", "3д-арт": "art3d",
-    "2д": "art2d", "2d": "art2d", "2д-арт": "art2d", "визуальная работа": "visual",
-    "анимация": "animation",
-    "программирование": "programming",
-    "тестирование": "testing",
-    "документация": "docs",
-    "финансы": "finance_legal", "юридические": "finance_legal",
-    "маркетинг": "marketing_pr", "pr": "marketing_pr",
-    "управление": "management",
-    "аудио": "audio",
-}
-
-# ======== IDLE REMINDER SETTINGS ========
-IDLE_REMINDER_DAYS = 3  # раз в сколько дней можно пинговать «безработных»
-IDLE_REMINDER_START_DELAY_SEC = 300  # через сколько секунд после старта запустить первую проверку
 # =======================================
 
 def _active_tasks_count(user_id: int, tasks: list[dict]) -> int:
@@ -145,10 +100,10 @@ async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TY
     return True
 
 def format_datetime_rus(dt: datetime) -> str:
-    return f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+    return f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
 
 def format_date_only_rus(dt: datetime) -> str:
-    return f"{dt.day} {month_names[dt.month]} {dt.year}"
+    return f"{dt.day} {MONTH_NAMES[dt.month]} {dt.year}"
 
 # Быстрые клавиатуры
 def kb_event_type():
@@ -364,7 +319,7 @@ def build_work_text_for_user(user_id: int) -> str:
     for t in my_tasks:
         if t.get("deadline"):
             dt = datetime.fromisoformat(t["deadline"]).replace(tzinfo=WORK_TZ)
-            ddl = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+            ddl = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
         else:
             ddl = "Не назначен"
         out.append(
@@ -395,7 +350,7 @@ def build_events_text_for_user(user_id: int) -> str:
     upcoming = upcoming[:5]
     out = ["<b>📅 Твои ближайшие события:</b>", ""]
     for dt, e in upcoming:
-        when = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+        when = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
         out.append(f"• <b>{html.escape(e['title'])}</b>\n  🕒 {when}\n  {html.escape(e.get('description',''))}\n")
     return "\n".join(out).strip()
 
@@ -466,7 +421,7 @@ def _format_day_events_text(user_id: int, year: int, month: int, day: int) -> st
     if not items:
         return "<b>Событий нет</b>"
 
-    lines = [f"<b>📅 {day} {month_names[month]} {year}</b>", ""]
+    lines = [f"<b>📅 {day} {MONTH_NAMES[month]} {year}</b>", ""]
     for dt, e in items:
         when = f"{dt.strftime('%H:%M')}"
         pfx = "📣" if e.get("type") == "meeting" else ("⏰" if e.get("type") == "deadline" else "📝")
@@ -628,7 +583,7 @@ async def idle_scan_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_event_notification(event, users, context, when_str):
     dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
-    simple_time = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+    simple_time = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
     event_text = (
         f"⏰ Напоминание! До события <b>{event['title']}</b> осталось {when_str} часа(ов)!\n\n"
         f"🕒 Когда: {simple_time}\n\n"
@@ -712,7 +667,7 @@ async def notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
-    simple_time = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+    simple_time = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
     # Формируем текст уведомления
     event_text = (
         f"📢 <b>{event['title']}</b>\n\n"
@@ -882,12 +837,12 @@ async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     reserved = user.get("reserved_tasks", [])
-    if len(reserved) >= 3:
-        await safe_reply(update, context, "⚠️ Ты не можешь брать более 3 задач одновременно!")
+    if len(reserved) >= MAX_ACTIVE_TASKS_PER_USER:
+        await safe_reply(update, context, f"⚠️ Ты не можешь брать более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно!")
         return ConversationHandler.END
 
     # Пока только один проект
-    projects = ["Starky Jungle", "Ideal Abyss", "Short film", "Non-project work"]
+    projects = DEFAULT_PROJECTS
     context.user_data["user_id"] = user_id
 
     markup = ReplyKeyboardMarkup([[p] for p in projects], one_time_keyboard=True, resize_keyboard=True)
@@ -1061,7 +1016,7 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ✅ Защита от null дедлайна
         if t.get("deadline"):
             dt = datetime.fromisoformat(t["deadline"]).replace(tzinfo=WORK_TZ)
-            date_str = f"{dt.day} {month_names[dt.month]} в {dt.strftime('%H:%M')}"
+            date_str = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
         else:
             date_str = "Не назначен"
         msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
@@ -1125,7 +1080,7 @@ async def search_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📌 Статус: {reserved_str}\n\n")
 
     # Разбиваем сообщение на части по 4000 символов, чтобы не превышать лимит Телеграма
-    max_len = 4000
+    max_len = MAX_TELEGRAM_MESSAGE_LEN
     for i in range(0, len(msg), max_len):
         await update.message.reply_text(msg[i:i+max_len], parse_mode="HTML")
 
