@@ -15,6 +15,8 @@ import html
 from database.db import SessionLocal
 from repositories.user_repository import UserRepository
 from services.user_service import UserService
+from repositories.task_repository import TaskRepository
+from services.task_service import TaskService
 from handlers.add_event_command import build_add_event_handler
 from handlers.give_points_command import build_give_points_handler
 from handlers.add_task_command import build_add_task_handler
@@ -39,6 +41,15 @@ def with_user_service(func):
         user_repo = UserRepository(db)
         user_service = UserService(user_repo)
         return func(user_service)
+    finally:
+        db.close()
+
+def with_task_service(func):
+    db = SessionLocal()
+    try:
+        task_repo = TaskRepository(db)
+        task_service = TaskService(task_repo)
+        return func(task_service)
     finally:
         db.close()
 
@@ -333,8 +344,12 @@ def build_points_text_for_user(user_record) -> str:
     return "\n".join(lines)
 
 def build_work_text_for_user(user_id: int) -> str:
-    tasks = load_json(TASKS_FILE)
-    my_tasks = [t for t in tasks if t.get("reserved_by") == user_id]
+    def _run(task_service: TaskService):
+        tasks = task_service.get_user_tasks(user_id)
+        return [task_service.task_to_legacy_dict(t) for t in tasks]
+
+    my_tasks = with_task_service(_run)
+
     if not my_tasks:
         return "🧰 Сейчас у тебя нет активных задач."
 
@@ -345,11 +360,13 @@ def build_work_text_for_user(user_id: int) -> str:
             ddl = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
         else:
             ddl = "Не назначен"
+
         out.append(
             f"• <b>{html.escape(t['title'])}</b> (#{t['id']})\n"
             f"  ⏰ Дедлайн: {ddl}\n"
             f"  🏆 Баллы: {t.get('points', 0)}\n"
         )
+
     return "\n".join(out).strip()
 
 def build_events_text_for_user(user_id: int) -> str:
@@ -1014,18 +1031,17 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return  # пользователь не в команде — дальше не идём
-    user_id = update.effective_user.id
-    users = load_json(USERS_FILE)
-    tasks = load_json(TASKS_FILE)
-
-    user = next((u for u in users if u["user_id"] == user_id), None)
-    if not user:
-        await update.message.reply_text("⚠️ Почему тебя нет в реестре империи?")
         return
 
-    # Найдем задачи, которые зарезервированы текущим пользователем
-    reserved_tasks = [t for t in tasks if t.get("reserved_by") == user_id]
+    user_id = update.effective_user.id if update.effective_user else None
+    if not user_id:
+        return
+
+    def _run(task_service: TaskService):
+        tasks = task_service.get_user_tasks(user_id)
+        return [task_service.task_to_legacy_dict(t) for t in tasks]
+
+    reserved_tasks = with_task_service(_run)
 
     if not reserved_tasks:
         await update.message.reply_text(
@@ -1036,17 +1052,19 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = "📝 Ваши текущие задачи:\n\n"
     for t in reserved_tasks:
-        # ✅ Защита от null дедлайна
         if t.get("deadline"):
             dt = datetime.fromisoformat(t["deadline"]).replace(tzinfo=WORK_TZ)
             date_str = f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
         else:
             date_str = "Не назначен"
-        msg += (f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
-                f"📄 {t['description']}\n"
-                f"📂 Тип: {t['type']}\n"
-                f"🏆 Баллы: {t['points']}\n"
-                f"⏰ Дедлайн: {date_str}\n\n")
+
+        msg += (
+            f"🔹 <b>{t['title']}</b> (#{t['id']})\n"
+            f"📄 {t['description']}\n"
+            f"📂 Тип: {t['type']}\n"
+            f"🏆 Баллы: {t['points']}\n"
+            f"⏰ Дедлайн: {date_str}\n\n"
+        )
 
     await update.message.reply_text(msg, parse_mode="HTML")
 
