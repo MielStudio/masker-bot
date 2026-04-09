@@ -59,42 +59,54 @@ MONTHS_NOM = {
 # =========================
 
 ROLE_CATALOG = {
-    "gamedesign": ("Геймдизайн", "🎮"),
-    "narrative": ("Сценарий и нарратив", "🖋️"),
-    "art3d": ("3D-арт", "🧊"),
-    "art2d": ("2D-арт", "🎨"),
-    "animation": ("Анимация", "🎞️"),
+    "game_design": ("Геймдизайн", "🎮"),
+    "level_design": ("Левел-дизайн", "🧱"),
+    "narrative": ("Сценарий и нарратив", "📖"),
     "programming": ("Программирование", "💻"),
     "testing": ("Тестирование", "🧪"),
-    "docs": ("Документация", "📚"),
-    "finance_legal": ("Финансы и юр. вопросы", "⚖️"),
-    "marketing_pr": ("Маркетинг и PR", "📣"),
-    "management": ("Управление", "🧭"),
-    "audio": ("Аудио", "🎵"),
+    "2d_art": ("2Д-арт", "🎨"),
+    "ui_design": ("Интерфейс", "🧩"),
+    "3d_art": ("3Д-арт", "🧊"),
+    "animation": ("Анимация", "🎞"),
+    "texturing": ("Текстуринг", "🪵"),
+    "audio": ("Музыка и звук", "🎵"),
+    "management": ("Управление", "📋"),
+    "finance": ("Финансы и аудит", "💰"),
+    "marketing": ("Аналитика и маркетинг", "📊"),
+    "documentation": ("Текст и документация", "📝"),
+    "other": ("Другое", "❓"),
 }
 
 # Синонимы для автоподбора role id из старых текстовых ролей
 ROLE_SYNONYMS = {
-    "геймдизайн": "gamedesign",
+    "геймдизайн": "game_design",
+    "левел-дизайн": "level_design",
+    "левел дизайн": "level_design",
     "нарратив": "narrative",
     "сценарий": "narrative",
-    "3д": "art3d",
-    "3d": "art3d",
-    "3д-арт": "art3d",
-    "2д": "art2d",
-    "2d": "art2d",
-    "2д-арт": "art2d",
-    "визуальная работа": "visual",
-    "анимация": "animation",
     "программирование": "programming",
     "тестирование": "testing",
-    "документация": "docs",
-    "финансы": "finance_legal",
-    "юридические": "finance_legal",
-    "маркетинг": "marketing_pr",
-    "pr": "marketing_pr",
-    "управление": "management",
+    "2д": "2d_art",
+    "2d": "2d_art",
+    "2д-арт": "2d_art",
+    "интерфейс": "ui_design",
+    "ui": "ui_design",
+    "3д": "3d_art",
+    "3d": "3d_art",
+    "3д-арт": "3d_art",
+    "анимация": "animation",
+    "текстуринг": "texturing",
+    "музыка": "audio",
+    "звук": "audio",
     "аудио": "audio",
+    "управление": "management",
+    "финансы": "finance",
+    "аудит": "finance",
+    "маркетинг": "marketing",
+    "аналитика": "marketing",
+    "документация": "documentation",
+    "текст": "documentation",
+    "другое": "other",
 }
 
 # =========================
@@ -102,10 +114,8 @@ ROLE_SYNONYMS = {
 # =========================
 
 DEFAULT_PROJECTS = [
-    "Starky Jungle",
-    "Ideal Abyss",
-    "Short film",
-    "Non-project work",
+    "F.R.E.U.S",
+    "Teamwork",
 ]
 
 # =========================
