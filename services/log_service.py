@@ -57,3 +57,15 @@ class LogService:
             t_value=t_value,
             k_value=k_value,
         )
+
+    def get_recent_audit_logs(self, limit=20):
+        return self.repo.get_recent_audit_logs(limit)
+
+    def get_recent_error_logs(self, limit=20):
+        return self.repo.get_recent_error_logs(limit)
+
+    def get_recent_task_history(self, limit=20):
+        return self.repo.get_recent_task_history(limit)
+
+    def get_recent_points_ledger(self, limit=20):
+        return self.repo.get_recent_points_ledger(limit)

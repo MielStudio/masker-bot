@@ -1,6 +1,7 @@
 import json
 from database.models import AuditLog, ErrorLog, TaskHistory, PointsLedger
 
+
 class LogRepository:
     def __init__(self, db):
         self.db = db
@@ -91,3 +92,35 @@ class LogRepository:
         self.db.commit()
         self.db.refresh(row)
         return row
+
+    def get_recent_audit_logs(self, limit: int = 20):
+        return (
+            self.db.query(AuditLog)
+            .order_by(AuditLog.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def get_recent_error_logs(self, limit: int = 20):
+        return (
+            self.db.query(ErrorLog)
+            .order_by(ErrorLog.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def get_recent_task_history(self, limit: int = 20):
+        return (
+            self.db.query(TaskHistory)
+            .order_by(TaskHistory.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def get_recent_points_ledger(self, limit: int = 20):
+        return (
+            self.db.query(PointsLedger)
+            .order_by(PointsLedger.id.desc())
+            .limit(limit)
+            .all()
+        )

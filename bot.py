@@ -524,6 +524,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/task_done — пометить задачу выполненной\n"
         "/unassign_task — снять участника с задачи\n"
         "/assign_task — назначить задачу участнику"
+        "/logs [audit|errors|tasks|points] — посмотреть логи\n"
     )
     await safe_reply(update, context, help_text, parse_mode="HTML")
 
@@ -829,6 +830,73 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
         await safe_reply(update, context, f"❌ Ошибка: {e}")
 
 
+async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "❌ У тебя нет доступа к логам.")
+        return
+
+    mode = context.args[0].lower() if context.args else "audit"
+
+    def _run(log_service: LogService):
+        if mode == "errors":
+            return ("errors", log_service.get_recent_error_logs(limit=15))
+        if mode == "tasks":
+            return ("tasks", log_service.get_recent_task_history(limit=15))
+        if mode == "points":
+            return ("points", log_service.get_recent_points_ledger(limit=15))
+        return ("audit", log_service.get_recent_audit_logs(limit=15))
+
+    log_type, items = with_log_service(_run)
+
+    if not items:
+        await safe_reply(update, context, "📭 Логи пусты.")
+        return
+
+    lines = [f"📜 <b>Логи: {log_type}</b>", ""]
+
+    if log_type == "audit":
+        for item in items:
+            lines.append(
+                f"#{item.id} | {item.action_type}\n"
+                f"entity: {item.entity_type} ({item.entity_id})\n"
+                f"actor_user_id: {item.actor_user_id}\n"
+                f"{item.payload_json or ''}"
+            )
+            lines.append("")
+
+    elif log_type == "errors":
+        for item in items:
+            lines.append(
+                f"#{item.id} | {item.source}\n"
+                f"{item.message}"
+            )
+            lines.append("")
+
+    elif log_type == "tasks":
+        for item in items:
+            lines.append(
+                f"#{item.id} | task_id={item.task_id}\n"
+                f"{item.action_type}: {item.old_value} → {item.new_value}\n"
+                f"{item.note or ''}"
+            )
+            lines.append("")
+
+    elif log_type == "points":
+        for item in items:
+            lines.append(
+                f"#{item.id} | user_id={item.user_id} | project_id={item.project_id}\n"
+                f"{item.source_type}: {item.amount}\n"
+                f"{item.reason or ''}"
+            )
+            lines.append("")
+
+    text = "\n".join(lines).strip()
+
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n...[обрезано]"
+
+    await safe_reply(update, context, text, parse_mode="HTML")
+
 # =========================
 # APP INIT
 # =========================
@@ -876,6 +944,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("admin_help", admin_help))
+    app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("upcoming_events", upcoming_events))
 
     app.add_handler(build_give_points_handler(
