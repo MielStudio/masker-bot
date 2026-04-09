@@ -1,5 +1,5 @@
 from sqlalchemy import Column, Integer, Text, REAL, ForeignKey
-from db import Base
+from database.db import Base
 
 
 class AuditLog(Base):
