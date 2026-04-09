@@ -23,7 +23,7 @@ from services.event_service import EventService
 from services.points_service import PointsService
 from handlers.give_points_command import build_give_points_handler
 from config import ADMIN_ID, WORK_TZ, MONTH_NAMES, DEFAULT_PROJECTS, MAX_ACTIVE_TASKS_PER_USER
-
+import traceback
 
 SELECT_PROJECT, SELECT_TASK, CONFIRM = range(3)
 
@@ -182,6 +182,8 @@ async def upcoming_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user = update.effective_user
+    print("=== /upcoming_events ===")
+    print("user_id =", user.id)
     if not user:
         return
 
@@ -191,6 +193,7 @@ async def upcoming_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return event_service.get_upcoming_for_user(user.id, now, limit=5)
 
     upcoming = with_event_service(_run)
+    print("upcoming =", upcoming)
     if not upcoming:
         await safe_reply(update, context, "📅 Ближайших событий для тебя не найдено.")
         return
@@ -218,8 +221,12 @@ async def my_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     def _run(points_service: PointsService):
         return points_service.get_user_points_summary(tg_user_id)
+    
+    print("=== /my_points ===")
+    print("telegram_user_id =", tg_user_id)
 
     summary = with_points_service(_run)
+    print("summary =", summary)
     if not summary:
         await safe_reply(update, context, "❌ Ты отсутствуешь в системе реестра.")
         return
@@ -246,12 +253,15 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
+    print("=== /my_task ===")
+    print("user_id =", user_id)
 
     def _run(task_service: TaskService):
         tasks = task_service.get_user_tasks(user_id)
         return [task_service.task_to_legacy_dict(t) for t in tasks]
 
     reserved_tasks = with_task_service(_run)
+    print("reserved_tasks =", reserved_tasks)
     if not reserved_tasks:
         await safe_reply(update, context, "😔 У тебя сейчас нет активных задач. Используй /get_task.")
         return
@@ -287,6 +297,10 @@ async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     user_id = update.effective_user.id
+
+    print("=== /get_task ===")
+    print("user_id =", user_id)
+
     user = get_user_by_id(user_id)
     if not user:
         await safe_reply(update, context, "⚠️ Ты не найден в реестре.")
@@ -296,6 +310,7 @@ async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return task_service.count_user_active_tasks(user_id)
 
     active_tasks_count = with_task_service(_run)
+    print("active_tasks_count =", active_tasks_count)
     if active_tasks_count >= MAX_ACTIVE_TASKS_PER_USER:
         await safe_reply(update, context, f"⚠️ Нельзя брать более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно.")
         return ConversationHandler.END
@@ -712,6 +727,15 @@ async def post_init(app: Application) -> None:
         BotCommand("get_task", "Взять новую задачу"),
     ])
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    print("=== ERROR HANDLER ===")
+    print("Update:", update)
+    print("Error:", context.error)
+    traceback.print_exception(
+        type(context.error),
+        context.error,
+        context.error.__traceback__,
+    )
 
 def main():
     bot_token = os.getenv("BOT_TOKEN")
@@ -737,6 +761,7 @@ def main():
     app.add_handler(CommandHandler("unassign_task", unassign_task))
     app.add_handler(CommandHandler("assign_task", assign_task_to_user))
     app.add_handler(get_task_handler())
+    app.add_error_handler(error_handler)
 
     app.run_polling()
 
