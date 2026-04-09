@@ -1,6 +1,7 @@
 import os
 import re
 from datetime import datetime
+import html
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand
 from telegram.ext import (
@@ -21,6 +22,8 @@ from services.user_service import UserService
 from services.task_service import TaskService
 from services.event_service import EventService
 from services.points_service import PointsService
+from repositories.log_repository import LogRepository
+from services.log_service import LogService
 from handlers.give_points_command import build_give_points_handler
 from config import ADMIN_ID, WORK_TZ, MONTH_NAMES, DEFAULT_PROJECTS, MAX_ACTIVE_TASKS_PER_USER
 import traceback
@@ -84,6 +87,13 @@ def create_points_service():
     service._db = db
     return service
 
+def with_log_service(func):
+    db = SessionLocal()
+    try:
+        service = LogService(LogRepository(db))
+        return func(service)
+    finally:
+        db.close()
 
 # =========================
 # COMMON HELPERS
@@ -92,6 +102,11 @@ def create_points_service():
 def format_datetime_rus(dt: datetime) -> str:
     return f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
 
+def get_internal_user_id_by_tg(tg_user_id: int) -> int | None:
+    def _run(user_service: UserService):
+        user = user_service.get_user_by_telegram_id(tg_user_id)
+        return user.id if user else None
+    return with_user_service(_run)
 
 def get_user_by_id(user_id: int):
     def _run(user_service: UserService):
@@ -418,6 +433,8 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return task_service.assign_task_with_auto_deadline(task_id, user_id, WORK_TZ)
 
     task = with_task_service(_assign)
+    actor_db_id = get_internal_user_id_by_tg(user_id)
+
     if not task:
         await safe_reply(update, context, f"⚠️ Задача #{task_id} не найдена или недоступна.")
         return ConversationHandler.END
@@ -440,6 +457,29 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description="Пожалуйста, заверши работу в срок.",
             dt_value=task.deadline,
         )
+    
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="take_task",
+            entity_type="task",
+            entity_id=task.id,
+            payload={
+                "title": task.title,
+                "deadline": task.deadline.isoformat() if task.deadline else None
+            }
+        )
+
+        log_service.log_task_history(
+            task_id=task.id,
+            actor_user_id=actor_db_id,
+            action_type="assigned",
+            old_value="available",
+            new_value="in_progress",
+            note="Пользователь взял задачу себе"
+        )
+
+    with_log_service(_log)
 
     with_event_repo(_ensure_event)
     await safe_reply(update, context, "✅ Задача назначена тебе.")
@@ -559,6 +599,28 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not updated:
         await safe_reply(update, context, f"⚠️ Не удалось завершить задачу #{task_id}.")
         return
+    
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+    
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="task_done",
+            entity_type="task",
+            entity_id=task_id,
+            payload={"title": task_title}
+        )
+
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="status_changed",
+            old_value="in_progress",
+            new_value="done",
+            note="Админ пометил задачу выполненной"
+        )
+
+    with_log_service(_log)
 
     def _remove_events(event_repo: EventRepository):
         return event_repo.remove_by_task_id(task_id)
@@ -607,7 +669,35 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def _unassign(task_service: TaskService):
         return task_service.unassign_task(task_id)
 
+
     with_task_service(_unassign)
+
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+    removed_user_db_id = get_internal_user_id_by_tg(reserved_by)
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="unassign_task",
+            entity_type="task",
+            entity_id=task_id,
+            payload={
+                "title": task_title,
+                "removed_from_user_id": removed_user_db_id,
+                "removed_from_telegram_user_id": reserved_by,
+            }
+        )
+
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="unassigned",
+            old_value=str(removed_user_db_id) if removed_user_db_id is not None else None,
+            new_value=None,
+            note="Админ снял пользователя с задачи"
+        )
+    
+    with_log_service(_log)
 
     def _remove_events(event_repo: EventRepository):
         return event_repo.remove_by_task_id(task_id)
@@ -691,6 +781,32 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
                 description="Администратор назначил тебе задачу.",
                 dt_value=task.deadline,
             )
+        
+        actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+        
+        def _log(log_service: LogService):
+            log_service.log_audit(
+                actor_user_id=actor_db_id,
+                action_type="assign_task",
+                entity_type="task",
+                entity_id=task_id,
+                payload={
+                    "assigned_to_user_id": target_user.id,
+                    "assigned_to_telegram_user_id": target_user.telegram_user_id,
+                    "task_title": task.title,
+                }
+            )
+
+            log_service.log_task_history(
+                task_id=task_id,
+                actor_user_id=actor_db_id,
+                action_type="assigned_by_admin",
+                old_value=None,
+                new_value=str(target_user.id),
+                note="Админ назначил задачу пользователю"
+            )
+
+        with_log_service(_log)
 
         with_event_repo(_ensure_event)
         await safe_reply(update, context, f"✅ Задача #{task_id} назначена пользователю @{username}.")
@@ -731,11 +847,24 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     print("=== ERROR HANDLER ===")
     print("Update:", update)
     print("Error:", context.error)
-    traceback.print_exception(
+
+    tb_text = "".join(traceback.format_exception(
         type(context.error),
         context.error,
         context.error.__traceback__,
-    )
+    ))
+    print(tb_text)
+
+    try:
+        def _log(log_service: LogService):
+            return log_service.log_error(
+                source="telegram_bot",
+                message=str(context.error),
+                traceback_text=tb_text,
+            )
+        with_log_service(_log)
+    except Exception as e:
+        print("FAILED TO WRITE ERROR LOG:", e)
 
 def main():
     bot_token = os.getenv("BOT_TOKEN")
