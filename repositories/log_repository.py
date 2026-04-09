@@ -1,5 +1,5 @@
 import json
-from models.log_models import AuditLog, ErrorLog, TaskHistory, PointsLedger
+from database.log_models import AuditLog, ErrorLog, TaskHistory, PointsLedger
 
 
 class LogRepository:
