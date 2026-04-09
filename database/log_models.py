@@ -4,6 +4,7 @@ from database.db import Base
 
 class AuditLog(Base):
     __tablename__ = "audit_logs"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     actor_user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
@@ -16,6 +17,7 @@ class AuditLog(Base):
 
 class ErrorLog(Base):
     __tablename__ = "error_logs"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     source = Column(Text, nullable=False)
@@ -26,6 +28,7 @@ class ErrorLog(Base):
 
 class TaskHistory(Base):
     __tablename__ = "task_history"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     task_id = Column(Integer, ForeignKey("tasks.id"), nullable=False)
@@ -39,6 +42,7 @@ class TaskHistory(Base):
 
 class PointsLedger(Base):
     __tablename__ = "points_ledger"
+    __table_args__ = {"extend_existing": True}
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
