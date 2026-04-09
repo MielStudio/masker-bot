@@ -1,6 +1,5 @@
 import json
-from database.log_models import AuditLog, ErrorLog, TaskHistory, PointsLedger
-
+from database.models import AuditLog, ErrorLog, TaskHistory, PointsLedger
 
 class LogRepository:
     def __init__(self, db):
