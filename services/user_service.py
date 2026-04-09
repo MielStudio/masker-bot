@@ -20,39 +20,29 @@ class UserService:
         return self.user_repo.update_last_idle_reminder(telegram_user_id, dt_value)
 
     def user_to_legacy_dict(self, user: User) -> dict:
-        """
-        Временный адаптер:
-        превращает SQLAlchemy User в словарь, похожий на старый users.json,
-        чтобы можно было постепенно переписывать bot.py, а не всё сразу.
-        """
         role_names: list[str] = []
         roles_ext: list[dict] = []
 
-        for user_role in user.roles:
-            if user_role.role:
-                role_names.append(user_role.role.title)
+        for user_role in getattr(user, "work_roles", []):
+            work_role = getattr(user_role, "work_role", None)
+            if work_role:
+                role_names.append(work_role.title)
                 roles_ext.append(
                     {
-                        "id": user_role.role.code,
+                        "id": work_role.code,
                         "level": user_role.level,
                     }
                 )
-
-        points: dict[str, int] = {}
-        percent_rate: dict[str, float] = {}
-        for entry in user.point_entries:
-            points[entry.project_name] = entry.points
-            percent_rate[entry.project_name] = entry.percent_rate
 
         return {
             "user_id": user.telegram_user_id,
             "username": user.username,
             "full_name": user.full_name,
             "joined_at": user.joined_at.isoformat() if user.joined_at else None,
-            "last_idle_reminder": user.last_idle_reminder.isoformat() if user.last_idle_reminder else None,
+            "last_idle_reminder": user.last_idle_reminder_at.isoformat() if user.last_idle_reminder_at else None,
             "roles": role_names,
             "roles_ext": roles_ext,
-            "points": points,
-            "percent_rate": percent_rate,
-            "reserved_tasks": [],  # временно не тянем отсюда
+            "points": {"Общее": int(user.total_points or 0)},
+            "percent_rate": {"Общее": 1.0},
+            "reserved_tasks": [],
         }

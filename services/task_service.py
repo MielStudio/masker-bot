@@ -16,20 +16,33 @@ class TaskService:
         return self.task_repo.count_user_active_tasks(telegram_user_id)
 
     def task_to_legacy_dict(self, task) -> dict:
-        type_value = task.type_code
-        if not type_value and task.required_role:
-            type_value = task.required_role.title
+        type_value = None
+        if getattr(task, "required_work_role", None):
+            type_value = task.required_work_role.title
+        elif getattr(task, "category", None):
+            type_value = task.category.title
+
+        project_value = None
+        if getattr(task, "project", None):
+            project_value = task.project.title
+
+        reserved_by = None
+        active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+        if active_links:
+            user = getattr(active_links[0], "user", None)
+            if user is not None:
+                reserved_by = user.telegram_user_id
 
         return {
             "id": task.id,
             "title": task.title,
             "description": task.description,
             "type": type_value,
-            "project": task.project,
-            "points": task.points,
+            "project": project_value,
+            "points": 0,  # если позже захочешь, можно считать из J/C/T/K или отдельной формулы
             "estimated_days": task.estimated_days,
-            "reserved_by": task.assignee.telegram_user_id if task.assignee else None,
-            "deadline": task.deadline.isoformat() if task.deadline else None,
+            "reserved_by": reserved_by,
+            "deadline": task.deadline_at.isoformat() if task.deadline_at else None,
             "status": task.status,
         }
 
@@ -41,15 +54,32 @@ class TaskService:
             if role_id:
                 role_codes.append(role_id)
 
-        tasks = self.task_repo.list_available_for_user_roles(project, role_codes)
-        return [self.task_to_legacy_dict(t) for t in tasks]
+        tasks = self.task_repo.list_available_tasks()
+
+        filtered = []
+        for task in tasks:
+            task_project_title = task.project.title if getattr(task, "project", None) else None
+            if project and task_project_title != project:
+                continue
+
+            if role_codes:
+                task_role_code = None
+                if getattr(task, "required_work_role", None):
+                    task_role_code = task.required_work_role.code
+
+                if task_role_code and task_role_code not in role_codes:
+                    continue
+
+            filtered.append(task)
+
+        return [self.task_to_legacy_dict(t) for t in filtered]
 
     def assign_task_with_auto_deadline(self, task_id: int, telegram_user_id: int, work_tz):
         task = self.task_repo.get_by_id(task_id)
         if not task:
             return None
 
-        deadline = task.deadline
+        deadline = task.deadline_at
         if deadline is None:
             deadline = datetime.now(work_tz) + timedelta(days=task.estimated_days or 7)
 
@@ -59,10 +89,12 @@ class TaskService:
         task = self.task_repo.get_by_id(task_id)
         if not task:
             return None
-        if task.assignee_id is not None:
+
+        active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+        if len(active_links) >= (task.max_assignees or 1):
             return None
 
-        deadline = task.deadline
+        deadline = task.deadline_at
         if deadline is None:
             deadline = datetime.now(work_tz) + timedelta(days=task.estimated_days or 7)
 
@@ -74,11 +106,5 @@ class TaskService:
     def unassign_task(self, task_id: int):
         return self.task_repo.unassign_task(task_id)
 
-    def set_deadline(self, task_id: int, deadline: datetime):
-        return self.task_repo.set_deadline(task_id, deadline)
-
     def mark_done(self, task_id: int):
         return self.task_repo.mark_done(task_id)
-
-    def list_all_tasks(self):
-        return self.task_repo.list_all()

@@ -1,10 +1,6 @@
-from __future__ import annotations
+from sqlalchemy.orm import Session
 
-from typing import Iterable
-
-from sqlalchemy.orm import Session, joinedload
-
-from database.models import User, UserProjectPoints, UserRole
+from database.models import User
 
 
 class UserRepository:
@@ -12,23 +8,11 @@ class UserRepository:
         self.db = db
 
     def get_by_id(self, db_user_id: int) -> User | None:
-        return (
-            self.db.query(User)
-            .options(
-                joinedload(User.roles).joinedload(UserRole.role),
-                joinedload(User.point_entries),
-            )
-            .filter(User.id == db_user_id)
-            .first()
-        )
+        return self.db.query(User).filter(User.id == db_user_id).first()
 
     def get_by_telegram_id(self, telegram_user_id: int) -> User | None:
         return (
             self.db.query(User)
-            .options(
-                joinedload(User.roles).joinedload(UserRole.role),
-                joinedload(User.point_entries),
-            )
             .filter(User.telegram_user_id == telegram_user_id)
             .first()
         )
@@ -37,25 +21,13 @@ class UserRepository:
         username = username.lstrip("@").strip().lower()
         return (
             self.db.query(User)
-            .options(
-                joinedload(User.roles).joinedload(UserRole.role),
-                joinedload(User.point_entries),
-            )
             .filter(User.username.is_not(None))
             .filter(User.username.ilike(username))
             .first()
         )
 
     def list_all(self) -> list[User]:
-        return (
-            self.db.query(User)
-            .options(
-                joinedload(User.roles).joinedload(UserRole.role),
-                joinedload(User.point_entries),
-            )
-            .order_by(User.username.asc().nullslast(), User.full_name.asc().nullslast())
-            .all()
-        )
+        return self.db.query(User).all()
 
     def is_team_member(self, telegram_user_id: int) -> bool:
         return (
@@ -69,32 +41,7 @@ class UserRepository:
         user = self.get_by_telegram_id(telegram_user_id)
         if not user:
             return False
-        user.last_idle_reminder = dt_value
+
+        user.last_idle_reminder_at = dt_value
         self.db.commit()
         return True
-
-    def get_project_points_map(self, user: User) -> dict[str, dict[str, float | int]]:
-        result: dict[str, dict[str, float | int]] = {}
-        for entry in user.point_entries:
-            result[entry.project_name] = {
-                "points": entry.points,
-                "percent_rate": entry.percent_rate,
-            }
-        return result
-
-    def replace_project_points(
-        self,
-        user: User,
-        entries: Iterable[dict],
-    ) -> None:
-        self.db.query(UserProjectPoints).filter(UserProjectPoints.user_id == user.id).delete()
-        for item in entries:
-            self.db.add(
-                UserProjectPoints(
-                    user_id=user.id,
-                    project_name=item["project_name"],
-                    points=int(item.get("points", 0) or 0),
-                    percent_rate=float(item.get("percent_rate", 0.0) or 0.0),
-                )
-            )
-        self.db.commit()
