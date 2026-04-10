@@ -515,18 +515,12 @@ async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
         if existing:
             return existing
 
-        next_id = 1
-        all_events = event_repo.list_all()
-        if all_events:
-            next_id = max(e.id for e in all_events) + 1
-
         return event_repo.create_deadline_event(
-            event_id=next_id,
             task_id=task.id,
             telegram_user_id=user_id,
             title=f"Дедлайн по задаче #{task.id}",
             description="Пожалуйста, заверши работу в срок.",
-            dt_value=task.deadline,
+            dt_value=task.deadline_at,
         )
 
     def _log(log_service: LogService):
@@ -835,18 +829,12 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
             if existing:
                 return existing
 
-            next_id = 1
-            all_events = event_repo.list_all()
-            if all_events:
-                next_id = max(e.id for e in all_events) + 1
-
             return event_repo.create_deadline_event(
-                event_id=next_id,
                 task_id=task.id,
-                telegram_user_id=target_user.telegram_user_id,
-                title=f"Дедлайн по задаче #{task_id}",
-                description="Администратор назначил тебе задачу.",
-                dt_value=task.deadline,
+                telegram_user_id=user_id,
+                title=f"Дедлайн по задаче #{task.id}",
+                description="Пожалуйста, заверши работу в срок.",
+                dt_value=task.deadline_at,
             )
         
         actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)

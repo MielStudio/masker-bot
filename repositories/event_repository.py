@@ -55,7 +55,6 @@ class EventRepository:
 
     def create_deadline_event(
         self,
-        event_id: int,
         task_id: int,
         telegram_user_id: int,
         title: str,
@@ -75,7 +74,6 @@ class EventRepository:
             return None
 
         event = Event(
-            id=event_id,
             title=title,
             description=description,
             datetime_at=dt_value,
