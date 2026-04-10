@@ -537,7 +537,7 @@ async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
             entity_id=task.id,
             payload={
                 "title": task.title,
-                "deadline": task.deadline.isoformat() if task.deadline else None
+                "deadline": task.deadline_at.isoformat() if task.deadline_at else None
             }
         )
 
