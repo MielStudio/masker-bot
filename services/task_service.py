@@ -32,6 +32,12 @@ class TaskService:
             user = getattr(active_links[0], "user", None)
             if user is not None:
                 reserved_by = user.telegram_user_id
+        
+        points = 0
+        for attr in ("j_value", "c_value", "t_value"):
+            value = getattr(task, attr, None)
+            if value:
+                points += value
 
         return {
             "id": task.id,
@@ -39,7 +45,7 @@ class TaskService:
             "description": task.description,
             "type": type_value,
             "project": project_value,
-            "points": 0,  # если позже захочешь, можно считать из J/C/T/K или отдельной формулы
+            "points": points,  # если позже захочешь, можно считать из J/C/T/K или отдельной формулы
             "estimated_days": task.estimated_days,
             "reserved_by": reserved_by,
             "deadline": task.deadline_at.isoformat() if task.deadline_at else None,
@@ -108,3 +114,67 @@ class TaskService:
 
     def mark_done(self, task_id: int):
         return self.task_repo.mark_done(task_id)
+    
+    def format_task_card(self, task_dict: dict) -> str:
+        description = (task_dict.get("description") or "").strip()
+        if len(description) > 180:
+            description = description[:177] + "..."
+
+        est = task_dict.get("estimated_days")
+        est_text = f"{est} дн." if est else "не указано"
+
+        return (
+            f"🧩 <b>{task_dict['title']}</b>\n"
+            f"📁 Проект: {task_dict.get('project') or '—'}\n"
+            f"👤 Роль: {task_dict.get('type') or '—'}\n"
+            f"🏆 Баллы: {task_dict.get('points', 0)}\n"
+            f"⏳ Оценка: {est_text}\n"
+            f"🆔 ID: #{task_dict['id']}\n"
+            f"📝 {description or 'Без описания'}"
+        )
+    
+    def get_available_tasks_for_user_paginated(
+        self,
+        project: str,
+        user_record: dict,
+        page: int = 1,
+        per_page: int = 5,
+    ):
+        role_codes: list[str] = []
+
+        for item in user_record.get("roles_ext", []) or []:
+            role_id = item.get("id")
+            if role_id:
+                role_codes.append(role_id)
+
+        tasks = self.task_repo.list_available_tasks()
+
+        filtered = []
+        for task in tasks:
+            task_project_title = task.project.title if getattr(task, "project", None) else None
+            if project and task_project_title != project:
+                continue
+
+            if role_codes:
+                task_role_code = None
+                if getattr(task, "required_work_role", None):
+                    task_role_code = task.required_work_role.code
+
+                if task_role_code and task_role_code not in role_codes:
+                    continue
+
+            filtered.append(task)
+
+        total = len(filtered)
+        start = (page - 1) * per_page
+        end = start + per_page
+        page_items = filtered[start:end]
+
+        return {
+            "items": [self.task_to_legacy_dict(t) for t in page_items],
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "has_prev": page > 1,
+            "has_next": end < total,
+        }

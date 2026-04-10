@@ -10,7 +10,12 @@ class TaskRepository:
     def get_by_id(self, task_id: int) -> Task | None:
         return (
             self.db.query(Task)
-            .options(joinedload(Task.assignees))
+            .options(
+                joinedload(Task.assignees).joinedload(TaskAssignee.user),
+                joinedload(Task.project),
+                joinedload(Task.required_work_role),
+                joinedload(Task.category),
+            )
             .filter(Task.id == task_id)
             .first()
         )
@@ -41,9 +46,38 @@ class TaskRepository:
     def list_available_tasks(self) -> list[Task]:
         return (
             self.db.query(Task)
+            .options(
+                joinedload(Task.project),
+                joinedload(Task.required_work_role),
+                joinedload(Task.category),
+                joinedload(Task.assignees).joinedload(TaskAssignee.user),
+            )
             .filter(Task.status == "available")
             .order_by(Task.id.asc())
             .all()
+        )
+    
+    def list_available_tasks_paginated(self, offset: int = 0, limit: int = 5) -> list[Task]:
+        return (
+            self.db.query(Task)
+            .options(
+                joinedload(Task.project),
+                joinedload(Task.required_work_role),
+                joinedload(Task.category),
+                joinedload(Task.assignees).joinedload(TaskAssignee.user),
+            )
+            .filter(Task.status == "available")
+            .order_by(Task.id.asc())
+            .offset(offset)
+            .limit(limit)
+            .all()
+        )
+    
+    def count_available_tasks(self) -> int:
+        return (
+            self.db.query(Task)
+            .filter(Task.status == "available")
+            .count()
         )
 
     def assign_task(self, task_id: int, telegram_user_id: int, deadline=None) -> Task | None:

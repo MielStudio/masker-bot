@@ -132,7 +132,7 @@ class AllowedUser(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     telegram_user_id: Mapped[int] = mapped_column(Integer, unique=True, nullable=False)
-    added_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    added_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     added_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -154,10 +154,13 @@ class Permission(Base):
 
 class UserPermission(Base):
     __tablename__ = "user_permissions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "permission_id", name="uq_user_permission"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True)
-    permission_id: Mapped[int] = mapped_column(ForeignKey("permissions.id"), nullable=False, unique=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    permission_id: Mapped[int] = mapped_column(ForeignKey("permissions.id"), nullable=False)
 
     user: Mapped["User"] = relationship("User", back_populates="permissions")
     permission: Mapped["Permission"] = relationship("Permission", back_populates="user_links")
@@ -185,10 +188,13 @@ class WorkRole(Base):
 
 class UserWorkRole(Base):
     __tablename__ = "user_work_roles"
+    __table_args__ = (
+        UniqueConstraint("user_id", "work_role_id", name="uq_user_work_role"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True)
-    work_role_id: Mapped[int] = mapped_column(ForeignKey("work_roles.id"), nullable=False, unique=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    work_role_id: Mapped[int] = mapped_column(ForeignKey("work_roles.id"), nullable=False)
     level: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
 
     user: Mapped["User"] = relationship("User", back_populates="work_roles")
@@ -243,10 +249,13 @@ class Project(Base):
 
 class ProjectMember(Base):
     __tablename__ = "project_members"
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_project_member"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, unique=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     joined_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
@@ -256,10 +265,13 @@ class ProjectMember(Base):
 
 class ProjectTeamlead(Base):
     __tablename__ = "project_teamleads"
+    __table_args__ = (
+        UniqueConstraint("project_id", "user_id", name="uq_project_teamlead"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False, unique=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False, unique=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), nullable=False)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     assigned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     project: Mapped["Project"] = relationship("Project", back_populates="teamleads")
@@ -540,17 +552,6 @@ class ProjectPointSnapshot(Base):
     user: Mapped["User"] = relationship("User", back_populates="point_snapshots")
 
 
-class UserProjectPoints(Base):
-    __tablename__ = "user_project_points"
-    __table_args__ = (
-        UniqueConstraint("user_id", "project_name", name="uq_user_project_points"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    project_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    points: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    percent_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
 
 class AuditLog(Base):

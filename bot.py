@@ -3,7 +3,14 @@ import re
 from datetime import datetime
 import html
 
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, BotCommand
+from telegram import (
+    Update,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    BotCommand,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -12,6 +19,7 @@ from telegram.ext import (
     ConversationHandler,
     MessageHandler,
     filters,
+    CallbackQueryHandler
 )
 
 from database.db import SessionLocal
@@ -155,6 +163,67 @@ async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TY
 def is_admin(user_id: int | None) -> bool:
     return bool(user_id and user_id == ADMIN_ID)
 
+
+async def render_task_page(update_or_query, context, project: str, user_id: int, page: int = 1):
+    user_record = get_user_by_id(user_id)
+    if not user_record:
+        text = "⚠️ Пользователь не найден."
+        if hasattr(update_or_query, "edit_message_text"):
+            await update_or_query.edit_message_text(text)
+        else:
+            await safe_reply(update_or_query, context, text)
+        return
+
+    def _run(task_service: TaskService):
+        return task_service.get_available_tasks_for_user_paginated(
+            project=project,
+            user_record=user_record,
+            page=page,
+            per_page=5,
+        )
+
+    data = with_task_service(_run)
+    items = data["items"]
+
+    if not items:
+        text = "😔 Сейчас нет доступных задач для твоей роли."
+        if hasattr(update_or_query, "edit_message_text"):
+            await update_or_query.edit_message_text(text)
+        else:
+            await safe_reply(update_or_query, context, text, ReplyKeyboardRemove())
+        return
+
+    def _format(task_service: TaskService):
+        return [task_service.format_task_card(item) for item in items]
+
+    cards = with_task_service(_format)
+    text = "\n\n".join(cards)
+
+    buttons = []
+    for item in items:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"Взять #{item['id']}",
+                callback_data=f"take_task:{item['id']}",
+            )
+        ])
+
+    nav_row = []
+    if data["has_prev"]:
+        nav_row.append(InlineKeyboardButton("⬅️", callback_data=f"task_page:{page-1}"))
+    nav_row.append(InlineKeyboardButton(f"{data['page']}", callback_data="noop"))
+    if data["has_next"]:
+        nav_row.append(InlineKeyboardButton("➡️", callback_data=f"task_page:{page+1}"))
+
+    if nav_row:
+        buttons.append(nav_row)
+
+    markup = InlineKeyboardMarkup(buttons)
+
+    if hasattr(update_or_query, "edit_message_text"):
+        await update_or_query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+    else:
+        await safe_reply(update_or_query, context, text, markup=markup, parse_mode="HTML")
 
 # =========================
 # USER COMMANDS
@@ -348,77 +417,79 @@ async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     project = update.message.text.strip()
     context.user_data["project"] = project
+    context.user_data["page"] = 1
 
     user_id = context.user_data.get("user_id")
     if not user_id:
         await safe_reply(update, context, "⚠️ Не удалось определить пользователя.")
         return ConversationHandler.END
 
-    user_record = get_user_by_id(user_id)
-    if not user_record:
-        await safe_reply(update, context, "⚠️ Пользователь не найден.")
-        return ConversationHandler.END
-
-    def _run(task_service: TaskService):
-        return task_service.get_available_tasks_for_user(project, user_record)
-
-    relevant_tasks = with_task_service(_run)
-    if not relevant_tasks:
-        await safe_reply(update, context, "😔 Сейчас нет доступных задач для твоей роли.", ReplyKeyboardRemove())
-        return ConversationHandler.END
-
-    lines = ["📝 <b>Доступные задачи:</b>", ""]
-    for task in relevant_tasks:
-        estimated_days = task.get("estimated_days", 7)
-        if estimated_days >= 7:
-            weeks = estimated_days // 7
-            days = estimated_days % 7
-            time_str = f"{weeks} нед." if days == 0 else f"{weeks} нед. {days} дн."
-        else:
-            time_str = f"{estimated_days} дн."
-
-        lines.append(
-            f"🔹 <b>{task['title']}</b> (#{task['id']})\n"
-            f"📄 {task['description']}\n"
-            f"📂 Тип: {task['type']}\n"
-            f"🏆 Баллы: {task['points']}\n"
-            f"⏰ Примерное время: {time_str}"
-        )
-        lines.append("")
-
-    await safe_reply(update, context, "\n".join(lines).strip(), ReplyKeyboardRemove(), parse_mode="HTML")
-    await safe_reply(update, context, "Введи номер задачи, которую хочешь взять:")
+    await safe_reply(update, context, "🔎 Подбираю задачи...", ReplyKeyboardRemove())
+    await render_task_page(update, context, project=project, user_id=user_id, page=1)
     return SELECT_TASK
 
 
-async def select_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
-        return ConversationHandler.END
-
-    try:
-        task_id = int(update.message.text.strip())
-    except (TypeError, ValueError):
-        await safe_reply(update, context, "⚠️ Введи корректный номер задачи.")
+async def task_catalog_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
         return SELECT_TASK
 
-    context.user_data["task_id"] = task_id
-    await safe_reply(update, context, f"Подтверди выбор задачи #{task_id}. Напиши 'да' или 'нет'.")
-    return CONFIRM
+    await query.answer()
 
+    data = query.data or ""
+    user_id = context.user_data.get("user_id")
+    project = context.user_data.get("project")
 
-async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message or not update.message.text:
+    if not user_id or not project:
+        await query.edit_message_text("⚠️ Контекст выбора задачи потерян. Запусти /get_task заново.")
         return ConversationHandler.END
 
-    answer = update.message.text.strip().lower()
-    if answer != "да":
-        await safe_reply(update, context, "❌ Выбор отменён.")
+    if data == "noop":
+        return SELECT_TASK
+
+    if data.startswith("task_page:"):
+        page = int(data.split(":")[1])
+        context.user_data["page"] = page
+        await render_task_page(query, context, project=project, user_id=user_id, page=page)
+        return SELECT_TASK
+
+    if data.startswith("take_task:"):
+        task_id = int(data.split(":")[1])
+        context.user_data["task_id"] = task_id
+
+        markup = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_take:yes"),
+                InlineKeyboardButton("❌ Отмена", callback_data="confirm_take:no"),
+            ]
+        ])
+        await query.edit_message_text(
+            f"Подтвердить взятие задачи #{task_id}?",
+            reply_markup=markup
+        )
+        return CONFIRM
+
+    return SELECT_TASK
+
+async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
         return ConversationHandler.END
+
+    await query.answer()
+    data = query.data or ""
+
+    if data == "confirm_take:no":
+        await query.edit_message_text("❌ Выбор отменён.")
+        return ConversationHandler.END
+
+    if data != "confirm_take:yes":
+        return CONFIRM
 
     task_id = context.user_data.get("task_id")
     user_id = context.user_data.get("user_id")
     if not task_id or not user_id:
-        await safe_reply(update, context, "⚠️ Не удалось подтвердить выбор.")
+        await query.edit_message_text("⚠️ Не удалось подтвердить выбор.")
         return ConversationHandler.END
 
     def _count(task_service: TaskService):
@@ -426,7 +497,7 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     active_count = with_task_service(_count)
     if active_count >= MAX_ACTIVE_TASKS_PER_USER:
-        await safe_reply(update, context, f"⚠️ Нельзя иметь более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно.")
+        await query.edit_message_text(f"⚠️ Нельзя иметь более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно.")
         return ConversationHandler.END
 
     def _assign(task_service: TaskService):
@@ -436,7 +507,7 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     actor_db_id = get_internal_user_id_by_tg(user_id)
 
     if not task:
-        await safe_reply(update, context, f"⚠️ Задача #{task_id} не найдена или недоступна.")
+        await query.edit_message_text(f"⚠️ Задача #{task_id} не найдена или недоступна.")
         return ConversationHandler.END
 
     def _ensure_event(event_repo: EventRepository):
@@ -457,7 +528,7 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             description="Пожалуйста, заверши работу в срок.",
             dt_value=task.deadline,
         )
-    
+
     def _log(log_service: LogService):
         log_service.log_audit(
             actor_user_id=actor_db_id,
@@ -480,9 +551,9 @@ async def confirm_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     with_log_service(_log)
-
     with_event_repo(_ensure_event)
-    await safe_reply(update, context, "✅ Задача назначена тебе.")
+
+    await query.edit_message_text(f"✅ Задача #{task.id} назначена тебе.")
     return ConversationHandler.END
 
 
@@ -494,18 +565,12 @@ def get_task_handler():
         ],
         states={
             SELECT_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_project)],
-            SELECT_TASK: [MessageHandler(filters.TEXT & ~filters.COMMAND, select_task)],
-            CONFIRM: [
-                MessageHandler(
-                    filters.Regex(re.compile(r"^(да|нет)$", re.IGNORECASE)),
-                    confirm_task,
-                )
-            ],
+            SELECT_TASK: [CallbackQueryHandler(task_catalog_callback)],
+            CONFIRM: [CallbackQueryHandler(confirm_task_callback)],
         },
         fallbacks=[],
         allow_reentry=True,
     )
-
 
 # =========================
 # ADMIN COMMANDS
@@ -523,7 +588,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/check_points — проверить баллы участника\n"
         "/task_done — пометить задачу выполненной\n"
         "/unassign_task — снять участника с задачи\n"
-        "/assign_task — назначить задачу участнику"
+        "/assign_task — назначить задачу участнику\n"
         "/logs [audit|errors|tasks|points] — посмотреть логи\n"
     )
     await safe_reply(update, context, help_text, parse_mode="HTML")
@@ -752,8 +817,9 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
             await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
             return
 
-        if task_before.assignee_id is not None:
-            await safe_reply(update, context, f"⚠️ Задача #{task_id} уже назначена.")
+        active_links = [a for a in getattr(task_before, "assignees", []) if getattr(a, "is_active", False)]
+        if len(active_links) >= (task_before.max_assignees or 1):
+            await safe_reply(update, context, f"⚠️ Задача #{task_id} уже заполнена по исполнителям.")
             return
 
         def _assign(task_service: TaskService):
