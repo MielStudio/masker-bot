@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session, joinedload
 
 from database.models import Task, User, TaskAssignee
+from datetime import datetime
 
 
 class TaskRepository:
@@ -93,13 +94,28 @@ class TaskRepository:
         if not user:
             return None
 
-        # создаём связь
-        link = TaskAssignee(
-            task_id=task.id,
-            user_id=user.id,
-            is_active=True,
+        # ищем уже существующую связь task-user
+        existing_link = (
+            self.db.query(TaskAssignee)
+            .filter(TaskAssignee.task_id == task.id)
+            .filter(TaskAssignee.user_id == user.id)
+            .first()
         )
-        self.db.add(link)
+
+        if existing_link:
+            # если связь уже есть, просто реактивируем её
+            existing_link.is_active = True
+            if getattr(existing_link, "assigned_at", None) is None:
+                existing_link.assigned_at = datetime.utcnow()
+        else:
+            # иначе создаём новую
+            link = TaskAssignee(
+                task_id=task.id,
+                user_id=user.id,
+                is_active=True,
+                assigned_at=datetime.utcnow(),
+            )
+            self.db.add(link)
 
         task.status = "in_progress"
 
