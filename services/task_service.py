@@ -1,8 +1,7 @@
 from __future__ import annotations
-
 from datetime import datetime, timedelta
-
 from repositories.task_repository import TaskRepository
+from config import TASK_STATUS_LABELS, TASK_STATUS_RU
 
 
 class TaskService:
@@ -122,9 +121,11 @@ class TaskService:
 
         est = task_dict.get("estimated_days")
         est_text = f"{est} дн." if est else "не указано"
+        status_text = self.format_status_label(task_dict.get("status"))
 
         return (
             f"🧩 <b>{task_dict['title']}</b>\n"
+            f"📌 Статус: {status_text}\n"
             f"📁 Проект: {task_dict.get('project') or '—'}\n"
             f"👤 Роль: {task_dict.get('type') or '—'}\n"
             f"🏆 Баллы: {task_dict.get('points', 0)}\n"
@@ -178,3 +179,11 @@ class TaskService:
             "has_prev": page > 1,
             "has_next": end < total,
         }
+    
+    def format_status_label(self, status: str | None) -> str:
+        if not status:
+            return "⚪ Неизвестно"
+
+        emoji, _ = TASK_STATUS_LABELS.get(status, ("⚪", status))
+        title = TASK_STATUS_RU.get(status, status)
+        return f"{emoji} {title}"

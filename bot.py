@@ -33,7 +33,10 @@ from services.points_service import PointsService
 from repositories.log_repository import LogRepository
 from services.log_service import LogService
 from handlers.give_points_command import build_give_points_handler
-from config import ADMIN_ID, WORK_TZ, MONTH_NAMES, DEFAULT_PROJECTS, MAX_ACTIVE_TASKS_PER_USER
+from config import (
+    ADMIN_ID, WORK_TZ, MONTH_NAMES, DEFAULT_PROJECTS, MAX_ACTIVE_TASKS_PER_USER,
+    TASK_STATUS_RU, TASK_STATUS_LABELS
+)
 import traceback
 
 SELECT_PROJECT, SELECT_TASK, CONFIRM = range(3)
@@ -109,6 +112,14 @@ def with_log_service(func):
 
 def format_datetime_rus(dt: datetime) -> str:
     return f"{dt.day} {MONTH_NAMES[dt.month]} в {dt.strftime('%H:%M')}"
+
+def format_task_status(status: str | None) -> str:
+    if not status:
+        return "⚪ Неизвестно"
+
+    emoji, _ = TASK_STATUS_LABELS.get(status, ("⚪", status))
+    title = TASK_STATUS_RU.get(status, status)
+    return f"{emoji} {title}"
 
 def get_internal_user_id_by_tg(tg_user_id: int) -> int | None:
     def _run(user_service: UserService):
@@ -352,15 +363,18 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = ["📝 <b>Твои текущие задачи:</b>", ""]
     for task in reserved_tasks:
+        status_str = format_task_status(task.get("status"))
         if task.get("deadline"):
             dt = datetime.fromisoformat(task["deadline"]).replace(tzinfo=WORK_TZ)
             deadline_str = format_datetime_rus(dt)
         else:
             deadline_str = "Не назначен"
+    
 
         lines.append(
             f"🔹 <b>{task['title']}</b> (#{task['id']})\n"
-            f"📄 {task['description']}\n"
+            f"📌 Статус: {status_str}\n"
+            f"📄 {task.get('description') or 'Без описания'}\n"
             f"📂 Тип: {task['type']}\n"
             f"🏆 Баллы: {task['points']}\n"
             f"⏰ Дедлайн: {deadline_str}"

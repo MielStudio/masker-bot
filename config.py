@@ -134,3 +134,27 @@ REMINDER_24H_MAX_HOURS = 25
 
 REMINDER_2H_MIN_HOURS = 1.5
 REMINDER_2H_MAX_HOURS = 2.5
+
+# =========================
+# STATUS
+# =========================
+
+TASK_STATUS_LABELS = {
+    "backlog": ("🗂", "Backlog"),
+    "available": ("🟢", "Available"),
+    "in_progress": ("🛠", "In progress"),
+    "review": ("🟡", "Review"),
+    "done": ("✅", "Done"),
+    "blocked": ("⛔", "Blocked"),
+    "overdue": ("🔥", "Overdue"),
+}
+
+TASK_STATUS_RU = {
+    "backlog": "Бэклог",
+    "available": "Доступна",
+    "in_progress": "В работе",
+    "review": "На проверке",
+    "done": "Выполнена",
+    "blocked": "Заблокирована",
+    "overdue": "Просрочена",
+}
