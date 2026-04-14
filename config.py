@@ -158,3 +158,23 @@ TASK_STATUS_RU = {
     "blocked": "Заблокирована",
     "overdue": "Просрочена",
 }
+
+TASK_STATUSES = [
+    "backlog",
+    "available",
+    "in_progress",
+    "review",
+    "done",
+    "blocked",
+    "overdue",
+]
+
+TASK_STATUS_TRANSITIONS = {
+    "backlog": {"available"},
+    "available": {"in_progress", "blocked", "overdue"},
+    "in_progress": {"review", "blocked", "overdue"},
+    "review": {"in_progress", "done", "blocked", "overdue"},
+    "blocked": {"available", "in_progress"},
+    "overdue": {"in_progress", "review", "done", "blocked"},
+    "done": set(),
+}

@@ -267,6 +267,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/upcoming_events — ближайшие события\n"
         "/my_points — мои баллы\n"
         "/my_task — мои текущие задачи\n"
+        "/submit_task — отправить свою задачу на проверку\n"
         "/get_task — взять новую задачу"
     )
     await safe_reply(update, context, text, parse_mode="HTML")
@@ -383,6 +384,78 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, "\n".join(lines).strip(), parse_mode="HTML")
 
+
+async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user:
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ Используй: /submit_task <ID задачи>")
+        return
+
+    task_id = int(context.args[0])
+    telegram_user_id = update.effective_user.id
+    actor_db_id = get_internal_user_id_by_tg(telegram_user_id)
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
+        return
+
+    def _can_submit(task_service: TaskService):
+        return task_service.can_user_submit_task(task, telegram_user_id)
+
+    is_owner = with_task_service(_can_submit)
+    if not is_owner and not is_admin(telegram_user_id):
+        await safe_reply(update, context, "❌ Ты не можешь отправить эту задачу на проверку.")
+        return
+
+    if task.status != "in_progress":
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Задачу можно отправить на проверку только из статуса 'В работе'. Сейчас: {format_task_status(task.status)}"
+        )
+        return
+
+    def _submit(task_service: TaskService):
+        return task_service.submit_for_review(task_id)
+
+    updated = with_task_service(_submit)
+    if not updated:
+        await safe_reply(update, context, f"❌ Не удалось отправить задачу #{task_id} на проверку.")
+        return
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="submit_task_for_review",
+            entity_type="task",
+            entity_id=task_id,
+            payload={"title": task.title}
+        )
+
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="status_changed",
+            old_value="in_progress",
+            new_value="review",
+            note="Задача отправлена на проверку"
+        )
+
+    with_log_service(_log)
+
+    await safe_reply(
+        update,
+        context,
+        f"🟡 Задача #{task_id} отправлена на проверку."
+    )
 
 # =========================
 # GET TASK FLOW
@@ -595,6 +668,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/give_points — добавить баллы участнику\n"
         "/check_points — проверить баллы участника\n"
         "/task_done — пометить задачу выполненной\n"
+        "/return_task — вернуть задачу на доработку\n"
         "/unassign_task — снять участника с задачи\n"
         "/assign_task — назначить задачу участнику\n"
         "/logs [audit|errors|tasks|points] — посмотреть логи\n"
@@ -654,6 +728,7 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     task_id = int(context.args[0])
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
 
     def _get(task_service: TaskService):
         return task_service.get_task_by_id(task_id)
@@ -663,23 +738,35 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, f"⚠️ Задача #{task_id} не найдена.")
         return
 
-    reserved_by = task.assignee.telegram_user_id if task.assignee else None
+    if task.status != "review":
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Подтвердить можно только задачу в статусе 'На проверке'. Сейчас: {format_task_status(task.status)}"
+        )
+        return
+
+    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+    reserved_by = None
+    if active_links:
+        user = getattr(active_links[0], "user", None)
+        if user:
+            reserved_by = user.telegram_user_id
+
     task_title = task.title
 
-    def _mark_done(task_service: TaskService):
-        return task_service.mark_done(task_id)
+    def _approve(task_service: TaskService):
+        return task_service.approve_task(task_id)
 
-    updated = with_task_service(_mark_done)
+    updated = with_task_service(_approve)
     if not updated:
-        await safe_reply(update, context, f"⚠️ Не удалось завершить задачу #{task_id}.")
+        await safe_reply(update, context, f"⚠️ Не удалось подтвердить задачу #{task_id}.")
         return
-    
-    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
-    
+
     def _log(log_service: LogService):
         log_service.log_audit(
             actor_user_id=actor_db_id,
-            action_type="task_done",
+            action_type="approve_task",
             entity_type="task",
             entity_id=task_id,
             payload={"title": task_title}
@@ -689,9 +776,9 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             task_id=task_id,
             actor_user_id=actor_db_id,
             action_type="status_changed",
-            old_value="in_progress",
+            old_value="review",
             new_value="done",
-            note="Админ пометил задачу выполненной"
+            note="Админ подтвердил задачу"
         )
 
     with_log_service(_log)
@@ -700,18 +787,100 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return event_repo.remove_by_task_id(task_id)
 
     with_event_repo(_remove_events)
-    await safe_reply(update, context, f"✅ Задача #{task_id} помечена как выполненная.")
+
+    await safe_reply(update, context, f"✅ Задача #{task_id} подтверждена и завершена.")
 
     if reserved_by:
         try:
             await context.bot.send_message(
                 chat_id=reserved_by,
-                text=f"🎉 Задача <b>{task_title}</b> (#{task_id}) помечена как выполненная. Спасибо за работу!",
+                text=f"🎉 Задача <b>{task_title}</b> (#{task_id}) подтверждена администратором и завершена.",
                 parse_mode="HTML",
             )
         except Exception:
             pass
 
+
+async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user:
+        return
+    if not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ Используй: /return_task <ID задачи>")
+        return
+
+    task_id = int(context.args[0])
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
+        return
+
+    if task.status != "review":
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Вернуть можно только задачу в статусе 'На проверке'. Сейчас: {format_task_status(task.status)}"
+        )
+        return
+
+    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+    reserved_by = None
+    if active_links:
+        user = getattr(active_links[0], "user", None)
+        if user:
+            reserved_by = user.telegram_user_id
+
+    task_title = task.title
+
+    def _return(task_service: TaskService):
+        return task_service.return_from_review(task_id)
+
+    updated = with_task_service(_return)
+    if not updated:
+        await safe_reply(update, context, f"❌ Не удалось вернуть задачу #{task_id} в работу.")
+        return
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="return_task_from_review",
+            entity_type="task",
+            entity_id=task_id,
+            payload={"title": task_title}
+        )
+
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="status_changed",
+            old_value="review",
+            new_value="in_progress",
+            note="Админ вернул задачу на доработку"
+        )
+
+    with_log_service(_log)
+
+    await safe_reply(update, context, f"🛠 Задача #{task_id} возвращена в работу.")
+
+    if reserved_by:
+        try:
+            await context.bot.send_message(
+                chat_id=reserved_by,
+                text=f"⚠️ Задача <b>{task_title}</b> (#{task_id}) возвращена на доработку.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
 async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -845,7 +1014,7 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
 
             return event_repo.create_deadline_event(
                 task_id=task.id,
-                telegram_user_id=user_id,
+                telegram_user_id=target_user.telegram_user_id,
                 title=f"Дедлайн по задаче #{task.id}",
                 description="Пожалуйста, заверши работу в срок.",
                 dt_value=task.deadline_at,
@@ -887,7 +1056,7 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
                     f"📌 Тебе назначена новая задача!\n\n"
                     f"<b>{task.title}</b> (#{task_id})\n"
                     f"{html.escape(task.description or '')}\n\n"
-                    f"⏰ Дедлайн: {format_datetime_rus(task.deadline)}"
+                    f"⏰ Дедлайн: {format_datetime_rus(task.deadline_at)}"
                 ),
                 parse_mode="HTML",
             )
@@ -1023,7 +1192,9 @@ def main():
     app.add_handler(CommandHandler("my_points", my_points))
     app.add_handler(CommandHandler("check_points", check_points))
     app.add_handler(CommandHandler("my_task", my_task))
+    app.add_handler(CommandHandler("submit_task", submit_task))
     app.add_handler(CommandHandler("task_done", task_done))
+    app.add_handler(CommandHandler("return_task", return_task))
     app.add_handler(CommandHandler("unassign_task", unassign_task))
     app.add_handler(CommandHandler("assign_task", assign_task_to_user))
     app.add_handler(get_task_handler())

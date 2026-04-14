@@ -2,6 +2,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from database.models import Task, User, TaskAssignee
 from datetime import datetime
+from config import TASK_STATUSES, TASK_STATUS_TRANSITIONS
 
 
 class TaskRepository:
@@ -117,10 +118,12 @@ class TaskRepository:
             )
             self.db.add(link)
 
-        task.status = "in_progress"
-
         if deadline:
             task.deadline_at = deadline
+
+        # прямой переход available -> in_progress
+        if task.status != "in_progress":
+            task.status = "in_progress"
 
         self.db.commit()
         self.db.refresh(task)
@@ -140,8 +143,10 @@ class TaskRepository:
         for link in links:
             link.is_active = False
 
-        task.status = "available"
         task.deadline_at = None
+
+        if task.status != "available":
+            task.status = "available"
 
         self.db.commit()
         self.db.refresh(task)
@@ -153,6 +158,35 @@ class TaskRepository:
             return None
 
         task.status = "done"
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+    
+    def set_status(self, task_id: int, new_status: str) -> Task | None:
+        task = self.get_by_id(task_id)
+        if not task:
+            return None
+
+        task.status = new_status
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+    
+    def transition_status(self, task_id: int, new_status: str) -> Task | None:
+        task = self.get_by_id(task_id)
+        if not task:
+            return None
+
+        current_status = task.status
+
+        if new_status not in TASK_STATUSES:
+            return None
+
+        allowed = TASK_STATUS_TRANSITIONS.get(current_status, set())
+        if new_status not in allowed:
+            return None
+
+        task.status = new_status
         self.db.commit()
         self.db.refresh(task)
         return task

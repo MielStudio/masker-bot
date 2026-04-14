@@ -114,6 +114,33 @@ class TaskService:
     def mark_done(self, task_id: int):
         return self.task_repo.mark_done(task_id)
     
+    def set_status(self, task_id: int, new_status: str):
+        return self.task_repo.set_status(task_id, new_status)
+
+    def transition_status(self, task_id: int, new_status: str):
+        return self.task_repo.transition_status(task_id, new_status)
+    
+    def submit_for_review(self, task_id: int):
+        return self.task_repo.transition_status(task_id, "review")
+
+    def approve_task(self, task_id: int):
+        return self.task_repo.transition_status(task_id, "done")
+
+    def return_from_review(self, task_id: int):
+        return self.task_repo.transition_status(task_id, "in_progress")
+    
+    def can_user_submit_task(self, task, telegram_user_id: int) -> bool:
+        if not task:
+            return False
+
+        active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+        for link in active_links:
+            user = getattr(link, "user", None)
+            if user and user.telegram_user_id == telegram_user_id:
+                return True
+
+        return False
+    
     def format_task_card(self, task_dict: dict) -> str:
         description = (task_dict.get("description") or "").strip()
         if len(description) > 180:
