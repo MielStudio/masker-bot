@@ -455,7 +455,21 @@ async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update,
         context,
         f"🟡 Задача #{task_id} отправлена на проверку."
-    )
+    ) 
+    try:
+        await context.bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"🟡 <b>Задача отправлена на проверку</b>\n\n"
+                f"🆔 #{task_id}\n"
+                f"🧩 <b>{task.title}</b>\n"
+                f"👤 Отправил: @{update.effective_user.username or 'без username'}\n"
+                f"📌 Новый статус: {format_task_status('review')}"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
 
 # =========================
 # GET TASK FLOW
@@ -1145,6 +1159,7 @@ async def post_init(app: Application) -> None:
         BotCommand("upcoming_events", "Посмотреть грядущие события"),
         BotCommand("my_points", "Увидеть свои баллы"),
         BotCommand("my_task", "Посмотреть свои задачи"),
+        BotCommand("submit_task", "Отправить задачу на проверку"),
         BotCommand("get_task", "Взять новую задачу"),
     ])
 
