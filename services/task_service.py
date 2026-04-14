@@ -129,6 +129,12 @@ class TaskService:
     def return_from_review(self, task_id: int):
         return self.task_repo.transition_status(task_id, "in_progress")
     
+    def block_task(self, task_id: int):
+        return self.task_repo.transition_status(task_id, "blocked")
+
+    def unblock_task(self, task_id: int, target_status: str = "available"):
+        return self.task_repo.transition_status(task_id, target_status)
+    
     def can_user_submit_task(self, task, telegram_user_id: int) -> bool:
         if not task:
             return False
@@ -214,3 +220,17 @@ class TaskService:
         emoji, _ = TASK_STATUS_LABELS.get(status, ("⚪", status))
         title = TASK_STATUS_RU.get(status, status)
         return f"{emoji} {title}"
+    
+    def set_deadline(self, task_id: int, deadline_at: datetime | None):
+        return self.task_repo.set_deadline(task_id, deadline_at)
+    
+    def mark_overdue_tasks(self, now: datetime):
+        tasks = self.task_repo.list_overdue_candidates(now)
+        updated = []
+
+        for task in tasks:
+            changed = self.task_repo.transition_status(task.id, "overdue")
+            if changed:
+                updated.append(changed)
+
+        return updated

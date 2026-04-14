@@ -157,7 +157,9 @@ class TaskRepository:
         if not task:
             return None
 
-        task.status = "done"
+        if task.status != "done":
+            task.status = "done"
+
         self.db.commit()
         self.db.refresh(task)
         return task
@@ -190,3 +192,28 @@ class TaskRepository:
         self.db.commit()
         self.db.refresh(task)
         return task
+    
+    def set_deadline(self, task_id: int, deadline_at: datetime | None) -> Task | None:
+        task = self.get_by_id(task_id)
+        if not task:
+            return None
+
+        task.deadline_at = deadline_at
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+    
+    def list_overdue_candidates(self, now: datetime) -> list[Task]:
+        return (
+            self.db.query(Task)
+            .options(
+                joinedload(Task.assignees).joinedload(TaskAssignee.user),
+                joinedload(Task.project),
+                joinedload(Task.required_work_role),
+                joinedload(Task.category),
+            )
+            .filter(Task.deadline_at.is_not(None))
+            .filter(Task.deadline_at < now)
+            .filter(Task.status.in_(["available", "in_progress", "review"]))
+            .all()
+        )

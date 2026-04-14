@@ -236,6 +236,38 @@ async def render_task_page(update_or_query, context, project: str, user_id: int,
     else:
         await safe_reply(update_or_query, context, text, markup=markup, parse_mode="HTML")
 
+async def run_overdue_check(context: ContextTypes.DEFAULT_TYPE | None = None):
+    now = datetime.now(WORK_TZ)
+
+    def _run(task_service: TaskService):
+        return task_service.mark_overdue_tasks(now)
+
+    updated_tasks = with_task_service(_run)
+    if not updated_tasks:
+        return
+
+    for task in updated_tasks:
+        active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+        for link in active_links:
+            user = getattr(link, "user", None)
+            if not user:
+                continue
+
+            try:
+                if context:
+                    await context.bot.send_message(
+                        chat_id=user.telegram_user_id,
+                        text=(
+                            f"🔥 <b>Задача просрочена</b>\n\n"
+                            f"🆔 #{task.id}\n"
+                            f"🧩 <b>{task.title}</b>\n"
+                            f"📌 Новый статус: {format_task_status('overdue')}"
+                        ),
+                        parse_mode="HTML",
+                    )
+            except Exception:
+                pass
+
 # =========================
 # USER COMMANDS
 # =========================
@@ -683,8 +715,12 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/check_points — проверить баллы участника\n"
         "/task_done — пометить задачу выполненной\n"
         "/return_task — вернуть задачу на доработку\n"
+        "/block_task — заблокировать задачу\n"
+        "/unblock_task — разблокировать задачу\n"
         "/unassign_task — снять участника с задачи\n"
         "/assign_task — назначить задачу участнику\n"
+        "/set_deadline — изменить дедлайн задачи\n"
+        "/run_overdue — проверить и отметить просроченные задачи\n"
         "/logs [audit|errors|tasks|points] — посмотреть логи\n"
     )
     await safe_reply(update, context, help_text, parse_mode="HTML")
@@ -814,7 +850,6 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-
 async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
@@ -896,6 +931,193 @@ async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+async def block_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ Используй: /block_task <ID задачи> [причина]")
+        return
+
+    task_id = int(context.args[0])
+    reason = " ".join(context.args[1:]).strip() if len(context.args) > 1 else None
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
+        return
+
+    if task.status not in {"available", "in_progress", "review", "overdue"}:
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Нельзя заблокировать задачу из статуса {format_task_status(task.status)}."
+        )
+        return
+
+    old_status = task.status
+    task_title = task.title
+
+    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+    reserved_by = None
+    if active_links:
+        user = getattr(active_links[0], "user", None)
+        if user:
+            reserved_by = user.telegram_user_id
+
+    def _block(task_service: TaskService):
+        return task_service.block_task(task_id)
+
+    updated = with_task_service(_block)
+    if not updated:
+        await safe_reply(update, context, f"❌ Не удалось заблокировать задачу #{task_id}.")
+        return
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="block_task",
+            entity_type="task",
+            entity_id=task_id,
+            payload={
+                "title": task_title,
+                "reason": reason,
+            }
+        )
+
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="status_changed",
+            old_value=old_status,
+            new_value="blocked",
+            note=reason or "Админ заблокировал задачу"
+        )
+
+    with_log_service(_log)
+
+    await safe_reply(
+        update,
+        context,
+        f"⛔ Задача #{task_id} заблокирована."
+    )
+
+    if reserved_by:
+        try:
+            text = (
+                f"⛔ <b>Задача заблокирована</b>\n\n"
+                f"🆔 #{task_id}\n"
+                f"🧩 <b>{task_title}</b>\n"
+            )
+            if reason:
+                text += f"📝 Причина: {html.escape(reason)}"
+            await context.bot.send_message(
+                chat_id=reserved_by,
+                text=text,
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ Используй: /unblock_task <ID задачи>")
+        return
+
+    task_id = int(context.args[0])
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
+        return
+
+    if task.status != "blocked":
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Разблокировать можно только задачу в статусе {format_task_status('blocked')}."
+        )
+        return
+
+    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+    target_status = "in_progress" if active_links else "available"
+    task_title = task.title
+
+    reserved_by = None
+    if active_links:
+        user = getattr(active_links[0], "user", None)
+        if user:
+            reserved_by = user.telegram_user_id
+
+    def _unblock(task_service: TaskService):
+        return task_service.unblock_task(task_id, target_status=target_status)
+
+    updated = with_task_service(_unblock)
+    if not updated:
+        await safe_reply(update, context, f"❌ Не удалось разблокировать задачу #{task_id}.")
+        return
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="unblock_task",
+            entity_type="task",
+            entity_id=task_id,
+            payload={
+                "title": task_title,
+                "target_status": target_status,
+            }
+        )
+
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="status_changed",
+            old_value="blocked",
+            new_value=target_status,
+            note="Админ разблокировал задачу"
+        )
+
+    with_log_service(_log)
+
+    await safe_reply(
+        update,
+        context,
+        f"🟢 Задача #{task_id} разблокирована. Новый статус: {format_task_status(target_status)}"
+    )
+
+    if reserved_by:
+        try:
+            await context.bot.send_message(
+                chat_id=reserved_by,
+                text=(
+                    f"🟢 <b>Задача разблокирована</b>\n\n"
+                    f"🆔 #{task_id}\n"
+                    f"🧩 <b>{task_title}</b>\n"
+                    f"📌 Новый статус: {format_task_status(target_status)}"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
 async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
@@ -971,6 +1193,152 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    if len(context.args) < 3:
+        await safe_reply(
+            update,
+            context,
+            "⚠️ Используй: /set_deadline <ID задачи> <YYYY-MM-DD> <HH:MM>\n"
+            "Пример: /set_deadline 5 2026-04-10 12:30"
+        )
+        return
+
+    if not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ ID задачи должен быть числом.")
+        return
+
+    task_id = int(context.args[0])
+    raw_dt = f"{context.args[1]} {context.args[2]}"
+
+    try:
+        naive_dt = datetime.strptime(raw_dt, "%Y-%m-%d %H:%M")
+        deadline_at = naive_dt.replace(tzinfo=WORK_TZ)
+    except ValueError:
+        await safe_reply(
+            update,
+            context,
+            "⚠️ Неверный формат даты.\nИспользуй: YYYY-MM-DD HH:MM\nПример: 2026-04-10 12:30"
+        )
+        return
+
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
+        return
+
+    old_deadline = task.deadline_at.isoformat() if task.deadline_at else None
+    task_title = task.title
+
+    def _set(task_service: TaskService):
+        return task_service.set_deadline(task_id, deadline_at)
+
+    updated = with_task_service(_set)
+    if not updated:
+        await safe_reply(update, context, f"❌ Не удалось изменить дедлайн задачи #{task_id}.")
+        return
+
+    def _remove_events(event_repo: EventRepository):
+        return event_repo.remove_by_task_id(task_id)
+
+    def _ensure_event(event_repo: EventRepository):
+        return event_repo.create_deadline_event(
+            task_id=task_id,
+            telegram_user_id=active_user_tg_id,
+            title=f"Дедлайн по задаче #{task_id}",
+            description="Администратор обновил дедлайн задачи.",
+            dt_value=deadline_at,
+        )
+
+    active_links = [a for a in getattr(updated, "assignees", []) if getattr(a, "is_active", False)]
+    active_user_tg_id = None
+    if active_links:
+        user = getattr(active_links[0], "user", None)
+        if user:
+            active_user_tg_id = user.telegram_user_id
+
+    if active_user_tg_id:
+        with_event_repo(_remove_events)
+        with_event_repo(_ensure_event)
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="set_deadline",
+            entity_type="task",
+            entity_id=task_id,
+            payload={
+                "title": task_title,
+                "old_deadline": old_deadline,
+                "new_deadline": deadline_at.isoformat(),
+            }
+        )
+
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="deadline_changed",
+            old_value=old_deadline,
+            new_value=deadline_at.isoformat(),
+            note="Админ изменил дедлайн"
+        )
+
+    with_log_service(_log)
+
+    await safe_reply(
+        update,
+        context,
+        f"⏰ Дедлайн задачи #{task_id} изменён на {format_datetime_rus(deadline_at)}."
+    )
+
+    if active_user_tg_id:
+        try:
+            await context.bot.send_message(
+                chat_id=active_user_tg_id,
+                text=(
+                    f"⏰ <b>Дедлайн обновлён</b>\n\n"
+                    f"🆔 #{task_id}\n"
+                    f"🧩 <b>{task_title}</b>\n"
+                    f"📅 Новый дедлайн: {format_datetime_rus(deadline_at)}"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+async def run_overdue_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    now = datetime.now(WORK_TZ)
+
+    def _run(task_service: TaskService):
+        return task_service.mark_overdue_tasks(now)
+
+    updated_tasks = with_task_service(_run)
+
+    if not updated_tasks:
+        await safe_reply(update, context, "✅ Просроченных задач не найдено.")
+        return
+
+    lines = [f"🔥 Обновлено просроченных задач: {len(updated_tasks)}", ""]
+    for task in updated_tasks:
+        lines.append(f"• #{task.id} — {task.title}")
+
+    await safe_reply(update, context, "\n".join(lines))
 
 async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -1212,6 +1580,10 @@ def main():
     app.add_handler(CommandHandler("return_task", return_task))
     app.add_handler(CommandHandler("unassign_task", unassign_task))
     app.add_handler(CommandHandler("assign_task", assign_task_to_user))
+    app.add_handler(CommandHandler("block_task", block_task))
+    app.add_handler(CommandHandler("unblock_task", unblock_task))
+    app.add_handler(CommandHandler("set_deadline", set_deadline))
+    app.add_handler(CommandHandler("run_overdue", run_overdue_now))
     app.add_handler(get_task_handler())
     app.add_error_handler(error_handler)
 
