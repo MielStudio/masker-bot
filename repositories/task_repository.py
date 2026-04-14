@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 
-from database.models import Task, User, TaskAssignee
+from database.models import Task, User, TaskAssignee, Project, WorkRole, TaskCategory
 from datetime import datetime
 from config import TASK_STATUSES, TASK_STATUS_TRANSITIONS
 
@@ -21,7 +21,83 @@ class TaskRepository:
             .filter(Task.id == task_id)
             .first()
         )
+    
+    def create_task(
+        self,
+        *,
+        task_id: int,
+        project_id: int,
+        title: str,
+        description: str | None = None,
+        category_id: int | None = None,
+        required_work_role_id: int | None = None,
+        priority: str = "medium",
+        status: str = "available",
+        max_assignees: int = 1,
+        estimated_days: int | None = 7,
+        review_required: bool = True,
+        j_value: int | None = 0,
+        c_value: int | None = 0,
+        t_value: int | None = 0,
+        created_by_user_id: int | None = None,
+    ) -> Task | None:
+        task = Task(
+            id=task_id,
+            project_id=project_id,
+            title=title,
+            description=description,
+            category_id=category_id,
+            required_work_role_id=required_work_role_id,
+            priority=priority,
+            status=status,
+            max_assignees=max_assignees,
+            estimated_days=estimated_days,
+            review_required=review_required,
+            j_value=j_value,
+            c_value=c_value,
+            t_value=t_value,
+            created_by_user_id=created_by_user_id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
 
+        self.db.add(task)
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+    
+    def get_next_task_id(self) -> int:
+        last_task = (
+            self.db.query(Task)
+            .order_by(Task.id.desc())
+            .first()
+        )
+        if not last_task:
+            return 1
+        return last_task.id + 1
+    
+    def list_projects(self) -> list[Project]:
+        return (
+            self.db.query(Project)
+            .filter(Project.is_active.is_(True))
+            .order_by(Project.title.asc())
+            .all()
+        )
+
+    def list_work_roles(self) -> list[WorkRole]:
+        return (
+            self.db.query(WorkRole)
+            .order_by(WorkRole.title.asc())
+            .all()
+        )
+
+    def list_task_categories(self) -> list[TaskCategory]:
+        return (
+            self.db.query(TaskCategory)
+            .order_by(TaskCategory.title.asc())
+            .all()
+        )
+    
     def list_user_tasks(self, telegram_user_id: int) -> list[Task]:
         return (
             self.db.query(Task)
@@ -34,6 +110,27 @@ class TaskRepository:
             .all()
         )
 
+    def get_project_by_id(self, project_id: int) -> Project | None:
+        return (
+            self.db.query(Project)
+            .filter(Project.id == project_id)
+            .first()
+        )
+    
+    def get_work_role_by_id(self, work_role_id: int) -> WorkRole | None:
+        return (
+            self.db.query(WorkRole)
+            .filter(WorkRole.id == work_role_id)
+            .first()
+        )
+    
+    def get_task_category_by_id(self, category_id: int) -> TaskCategory | None:
+        return (
+            self.db.query(TaskCategory)
+            .filter(TaskCategory.id == category_id)
+            .first()
+        )
+    
     def count_user_active_tasks(self, telegram_user_id: int) -> int:
         return (
             self.db.query(Task)

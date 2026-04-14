@@ -107,6 +107,99 @@ class TaskService:
 
     def get_task_by_id(self, task_id: int):
         return self.task_repo.get_by_id(task_id)
+    
+    def list_projects(self):
+        return self.task_repo.list_projects()
+
+    def list_work_roles(self):
+        return self.task_repo.list_work_roles()
+
+    def list_task_categories(self):
+        return self.task_repo.list_task_categories()
+
+    def get_project_by_id(self, project_id: int):
+        return self.task_repo.get_project_by_id(project_id)
+
+    def get_work_role_by_id(self, work_role_id: int):
+        return self.task_repo.get_work_role_by_id(work_role_id)
+
+    def get_task_category_by_id(self, category_id: int):
+        return self.task_repo.get_task_category_by_id(category_id)
+    
+    def list_projects_for_ui(self) -> list[dict]:
+        projects = self.task_repo.list_projects()
+        return [
+            {
+                "id": p.id,
+                "code": p.code,
+                "title": p.title,
+            }
+            for p in projects
+        ]
+    
+    def list_work_roles_for_ui(self) -> list[dict]:
+        roles = self.task_repo.list_work_roles()
+        return [
+            {
+                "id": r.id,
+                "code": r.code,
+                "title": r.title,
+                "emoji": r.emoji,
+            }
+            for r in roles
+        ]
+    
+    def list_task_categories_for_ui(self) -> list[dict]:
+        categories = self.task_repo.list_task_categories()
+        return [
+            {
+                "id": c.id,
+                "code": c.code,
+                "title": c.title,
+            }
+            for c in categories
+        ]
+    
+    def get_next_task_id(self) -> int:
+        return self.task_repo.get_next_task_id()
+    
+    def create_task(
+        self,
+        *,
+        project_id: int,
+        title: str,
+        description: str | None = None,
+        category_id: int | None = None,
+        required_work_role_id: int | None = None,
+        priority: str = "medium",
+        status: str = "available",
+        max_assignees: int = 1,
+        estimated_days: int | None = 7,
+        review_required: bool = True,
+        j_value: int | None = 0,
+        c_value: int | None = 0,
+        t_value: int | None = 0,
+        created_by_user_id: int | None = None,
+    ):
+        task_id = self.task_repo.get_next_task_id()
+
+        return self.task_repo.create_task(
+            task_id=task_id,
+            project_id=project_id,
+            title=title,
+            description=description,
+            category_id=category_id,
+            required_work_role_id=required_work_role_id,
+            priority=priority,
+            status=status,
+            max_assignees=max_assignees,
+            estimated_days=estimated_days,
+            review_required=review_required,
+            j_value=j_value,
+            c_value=c_value,
+            t_value=t_value,
+            created_by_user_id=created_by_user_id,
+        )
 
     def unassign_task(self, task_id: int):
         return self.task_repo.unassign_task(task_id)

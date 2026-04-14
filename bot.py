@@ -41,6 +41,25 @@ import traceback
 
 SELECT_PROJECT, SELECT_TASK, CONFIRM = range(3)
 
+(
+    ADD_PROJECT,
+    ADD_TITLE,
+    ADD_DESC,
+    ADD_ROLE,
+    ADD_CATEGORY,
+    ADD_PRIORITY,
+    ADD_STATUS,
+    ADD_MAX_ASSIGNEES,
+    ADD_ESTIMATED_DAYS,
+    ADD_REVIEW_REQUIRED,
+    ADD_J,
+    ADD_C,
+    ADD_T,
+    ADD_CONFIRM,
+) = range(100, 114)
+
+
+
 
 # =========================
 # DB HELPERS
@@ -150,6 +169,26 @@ async def safe_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: s
             parse_mode=parse_mode,
         )
 
+def clear_add_task_data(context: ContextTypes.DEFAULT_TYPE):
+    for key in [
+        "add_project_id",
+        "add_project_title",
+        "add_title",
+        "add_description",
+        "add_role_id",
+        "add_role_title",
+        "add_category_id",
+        "add_category_title",
+        "add_priority",
+        "add_status",
+        "add_max_assignees",
+        "add_estimated_days",
+        "add_review_required",
+        "add_j",
+        "add_c",
+        "add_t",
+    ]:
+        context.user_data.pop(key, None)
 
 async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user_id = update.effective_user.id if update.effective_user else None
@@ -700,6 +739,420 @@ def get_task_handler():
     )
 
 # =========================
+# ADD TASK FLOW
+# =========================
+
+async def add_task_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return ConversationHandler.END
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
+        return ConversationHandler.END
+
+    clear_add_task_data(context)
+
+    def _run(task_service: TaskService):
+        return task_service.list_projects_for_ui()
+
+    projects = with_task_service(_run)
+    if not projects:
+        await safe_reply(update, context, "❌ В базе нет доступных проектов.")
+        return ConversationHandler.END
+
+    lines = ["📁 <b>Выбери проект для новой задачи:</b>", ""]
+    for p in projects:
+        lines.append(f"{p['id']} — {p['title']}")
+
+    await safe_reply(
+        update,
+        context,
+        "\n".join(lines) + "\n\nВведи ID проекта:",
+        parse_mode="HTML",
+    )
+    return ADD_PROJECT
+
+async def add_task_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await safe_reply(update, context, "⚠️ Введи числовой ID проекта.")
+        return ADD_PROJECT
+
+    project_id = int(text)
+
+    def _run(task_service: TaskService):
+        return task_service.get_project_by_id(project_id)
+
+    project = with_task_service(_run)
+    if not project:
+        await safe_reply(update, context, f"❌ Проект #{project_id} не найден.")
+        return ADD_PROJECT
+
+    context.user_data["add_project_id"] = project.id
+    context.user_data["add_project_title"] = project.title
+
+    await safe_reply(update, context, "🧠 Введи название задачи:")
+    return ADD_TITLE
+
+async def add_task_title(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    title = update.message.text.strip()
+    if not title:
+        await safe_reply(update, context, "⚠️ Название не может быть пустым.")
+        return ADD_TITLE
+
+    context.user_data["add_title"] = title
+    await safe_reply(update, context, "📝 Введи описание задачи. Можно написать '-' если без описания:")
+    return ADD_DESC
+
+async def add_task_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    desc = update.message.text.strip()
+    if desc == "-":
+        desc = ""
+
+    context.user_data["add_description"] = desc
+
+    def _run(task_service: TaskService):
+        return task_service.list_work_roles_for_ui()
+
+    roles = with_task_service(_run)
+    if not roles:
+        await safe_reply(update, context, "❌ В базе нет ролей.")
+        return ConversationHandler.END
+
+    lines = ["👤 <b>Выбери роль:</b>", ""]
+    for r in roles:
+        emoji = f"{r['emoji']} " if r.get("emoji") else ""
+        lines.append(f"{r['id']} — {emoji}{r['title']}")
+
+    await safe_reply(
+        update,
+        context,
+        "\n".join(lines) + "\n\nВведи ID роли:",
+        parse_mode="HTML",
+    )
+    return ADD_ROLE
+
+async def add_task_role(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await safe_reply(update, context, "⚠️ Введи числовой ID роли.")
+        return ADD_ROLE
+
+    role_id = int(text)
+
+    def _run(task_service: TaskService):
+        return task_service.get_work_role_by_id(role_id)
+
+    role = with_task_service(_run)
+    if not role:
+        await safe_reply(update, context, f"❌ Роль #{role_id} не найдена.")
+        return ADD_ROLE
+
+    context.user_data["add_role_id"] = role.id
+    context.user_data["add_role_title"] = role.title
+
+    def _run_categories(task_service: TaskService):
+        return task_service.list_task_categories_for_ui()
+
+    categories = with_task_service(_run_categories)
+    if not categories:
+        await safe_reply(update, context, "❌ В базе нет категорий задач.")
+        return ConversationHandler.END
+
+    lines = ["📂 <b>Выбери категорию:</b>", ""]
+    for c in categories:
+        lines.append(f"{c['id']} — {c['title']}")
+
+    await safe_reply(
+        update,
+        context,
+        "\n".join(lines) + "\n\nВведи ID категории:",
+        parse_mode="HTML",
+    )
+    return ADD_CATEGORY
+
+async def add_task_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await safe_reply(update, context, "⚠️ Введи числовой ID категории.")
+        return ADD_CATEGORY
+
+    category_id = int(text)
+
+    def _run(task_service: TaskService):
+        return task_service.get_task_category_by_id(category_id)
+
+    category = with_task_service(_run)
+    if not category:
+        await safe_reply(update, context, f"❌ Категория #{category_id} не найдена.")
+        return ADD_CATEGORY
+
+    context.user_data["add_category_id"] = category.id
+    context.user_data["add_category_title"] = category.title
+
+    await safe_reply(
+        update,
+        context,
+        "⚡ Введи приоритет: low / medium / high / critical\n\nПо умолчанию можно написать: medium"
+    )
+    return ADD_PRIORITY
+
+async def add_task_priority(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    priority = update.message.text.strip().lower()
+    allowed = {"low", "medium", "high", "critical"}
+
+    if priority not in allowed:
+        await safe_reply(update, context, "⚠️ Допустимые значения: low / medium / high / critical")
+        return ADD_PRIORITY
+
+    context.user_data["add_priority"] = priority
+
+    await safe_reply(
+        update,
+        context,
+        "📌 Введи статус: backlog / available\n\nРекомендую available, если задача должна сразу появиться участникам."
+    )
+    return ADD_STATUS
+
+async def add_task_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    status = update.message.text.strip().lower()
+    allowed = {"backlog", "available"}
+
+    if status not in allowed:
+        await safe_reply(update, context, "⚠️ Для создания доступны только backlog или available.")
+        return ADD_STATUS
+
+    context.user_data["add_status"] = status
+    await safe_reply(update, context, "👥 Введи max_assignees (например 1):")
+    return ADD_MAX_ASSIGNEES
+
+async def add_task_max_assignees(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await safe_reply(update, context, "⚠️ Введи целое число, например 1.")
+        return ADD_MAX_ASSIGNEES
+
+    value = int(text)
+    if value < 1:
+        await safe_reply(update, context, "⚠️ max_assignees должен быть не меньше 1.")
+        return ADD_MAX_ASSIGNEES
+
+    context.user_data["add_max_assignees"] = value
+    await safe_reply(update, context, "⏳ Введи estimated_days (например 7):")
+    return ADD_ESTIMATED_DAYS
+
+async def add_task_estimated_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await safe_reply(update, context, "⚠️ Введи целое число дней, например 7.")
+        return ADD_ESTIMATED_DAYS
+
+    value = int(text)
+    if value < 1:
+        await safe_reply(update, context, "⚠️ estimated_days должен быть не меньше 1.")
+        return ADD_ESTIMATED_DAYS
+
+    context.user_data["add_estimated_days"] = value
+    await safe_reply(update, context, "🔍 Требуется проверка после выполнения? yes / no")
+    return ADD_REVIEW_REQUIRED
+
+async def add_task_review_required(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip().lower()
+    if text not in {"yes", "no", "y", "n"}:
+        await safe_reply(update, context, "⚠️ Напиши yes или no.")
+        return ADD_REVIEW_REQUIRED
+
+    context.user_data["add_review_required"] = text in {"yes", "y"}
+    await safe_reply(update, context, "🏆 Введи J value (например 5):")
+    return ADD_J
+
+async def add_task_j(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await safe_reply(update, context, "⚠️ Введи целое число J.")
+        return ADD_J
+
+    context.user_data["add_j"] = int(text)
+    await safe_reply(update, context, "🏆 Введи C value (например 5):")
+    return ADD_C
+
+async def add_task_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await safe_reply(update, context, "⚠️ Введи целое число C.")
+        return ADD_C
+
+    context.user_data["add_c"] = int(text)
+    await safe_reply(update, context, "🏆 Введи T value (например 5):")
+    return ADD_T
+
+async def add_task_t(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip()
+    if not text.isdigit():
+        await safe_reply(update, context, "⚠️ Введи целое число T.")
+        return ADD_T
+
+    context.user_data["add_t"] = int(text)
+
+    text = (
+        "📋 <b>Проверь новую задачу:</b>\n\n"
+        f"📁 Проект: {context.user_data['add_project_title']}\n"
+        f"🧩 Название: {html.escape(context.user_data['add_title'])}\n"
+        f"📝 Описание: {html.escape(context.user_data['add_description'] or 'Без описания')}\n"
+        f"👤 Роль: {context.user_data['add_role_title']}\n"
+        f"📂 Категория: {context.user_data['add_category_title']}\n"
+        f"⚡ Приоритет: {context.user_data['add_priority']}\n"
+        f"📌 Статус: {format_task_status(context.user_data['add_status'])}\n"
+        f"👥 max_assignees: {context.user_data['add_max_assignees']}\n"
+        f"⏳ estimated_days: {context.user_data['add_estimated_days']}\n"
+        f"🔍 review_required: {'yes' if context.user_data['add_review_required'] else 'no'}\n"
+        f"🏆 J/C/T: {context.user_data['add_j']}/{context.user_data['add_c']}/{context.user_data['add_t']}\n\n"
+        "Напиши yes для создания или no для отмены."
+    )
+
+    await safe_reply(update, context, text, parse_mode="HTML")
+    return ADD_CONFIRM
+
+async def add_task_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return ConversationHandler.END
+
+    text = update.message.text.strip().lower()
+    if text not in {"yes", "no", "y", "n"}:
+        await safe_reply(update, context, "⚠️ Напиши yes или no.")
+        return ADD_CONFIRM
+
+    if text in {"no", "n"}:
+        clear_add_task_data(context)
+        await safe_reply(update, context, "❌ Создание задачи отменено.")
+        return ConversationHandler.END
+
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id if update.effective_user else None)
+
+    def _create(task_service: TaskService):
+        return task_service.create_task(
+            project_id=context.user_data["add_project_id"],
+            title=context.user_data["add_title"],
+            description=context.user_data["add_description"],
+            category_id=context.user_data["add_category_id"],
+            required_work_role_id=context.user_data["add_role_id"],
+            priority=context.user_data["add_priority"],
+            status=context.user_data["add_status"],
+            max_assignees=context.user_data["add_max_assignees"],
+            estimated_days=context.user_data["add_estimated_days"],
+            review_required=context.user_data["add_review_required"],
+            j_value=context.user_data["add_j"],
+            c_value=context.user_data["add_c"],
+            t_value=context.user_data["add_t"],
+            created_by_user_id=actor_db_id,
+        )
+
+    task = with_task_service(_create)
+    if not task:
+        await safe_reply(update, context, "❌ Не удалось создать задачу.")
+        return ConversationHandler.END
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="create_task",
+            entity_type="task",
+            entity_id=task.id,
+            payload={
+                "title": task.title,
+                "status": task.status,
+                "priority": task.priority,
+            }
+        )
+
+        log_service.log_task_history(
+            task_id=task.id,
+            actor_user_id=actor_db_id,
+            action_type="created",
+            old_value=None,
+            new_value=task.status,
+            note="Админ создал задачу"
+        )
+
+    with_log_service(_log)
+
+    clear_add_task_data(context)
+
+    await safe_reply(
+        update,
+        context,
+        f"✅ Задача создана: <b>{html.escape(task.title)}</b> (#{task.id})",
+        parse_mode="HTML",
+    )
+    return ConversationHandler.END
+
+async def add_task_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_add_task_data(context)
+    await safe_reply(update, context, "❌ Мастер создания задачи отменён.")
+    return ConversationHandler.END
+
+def get_add_task_handler():
+    return ConversationHandler(
+        entry_points=[CommandHandler("add_task", add_task_entry)],
+        states={
+            ADD_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_project)],
+            ADD_TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_title)],
+            ADD_DESC: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_desc)],
+            ADD_ROLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_role)],
+            ADD_CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_category)],
+            ADD_PRIORITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_priority)],
+            ADD_STATUS: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_status)],
+            ADD_MAX_ASSIGNEES: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_max_assignees)],
+            ADD_ESTIMATED_DAYS: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_estimated_days)],
+            ADD_REVIEW_REQUIRED: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_review_required)],
+            ADD_J: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_j)],
+            ADD_C: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_c)],
+            ADD_T: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_t)],
+            ADD_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_task_confirm)],
+        },
+        fallbacks=[CommandHandler("cancel", add_task_cancel)],
+        allow_reentry=True,
+    )
+
+# =========================
 # ADMIN COMMANDS
 # =========================
 
@@ -719,6 +1172,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/unblock_task — разблокировать задачу\n"
         "/unassign_task — снять участника с задачи\n"
         "/assign_task — назначить задачу участнику\n"
+        "/add_task — создать новую задачу\n"
         "/set_deadline — изменить дедлайн задачи\n"
         "/run_overdue — проверить и отметить просроченные задачи\n"
         "/logs [audit|errors|tasks|points] — посмотреть логи\n"
@@ -1584,6 +2038,7 @@ def main():
     app.add_handler(CommandHandler("unblock_task", unblock_task))
     app.add_handler(CommandHandler("set_deadline", set_deadline))
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))
+    app.add_handler(get_add_task_handler())
     app.add_handler(get_task_handler())
     app.add_error_handler(error_handler)
 
