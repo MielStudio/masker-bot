@@ -327,3 +327,52 @@ class TaskService:
                 updated.append(changed)
 
         return updated
+    
+    def list_checklists(self, task_id: int):
+        return self.task_repo.list_checklists(task_id)
+
+    def add_checklist_item(self, task_id: int, title: str):
+        if not title or not title.strip():
+            return None
+        return self.task_repo.add_checklist_item(task_id, title.strip())
+
+    def toggle_checklist_item(self, checklist_id: int):
+        return self.task_repo.toggle_checklist_item(checklist_id)
+
+    def delete_checklist_item(self, checklist_id: int):
+        return self.task_repo.delete_checklist_item(checklist_id)
+    
+    def format_checklist(self, items) -> str:
+        if not items:
+            return "—"
+
+        lines = []
+        for item in items:
+            mark = "✅" if item.is_done else "⬜"
+            lines.append(f"{mark} [{item.id}] {item.title}")
+        return "\n".join(lines)
+    
+    def has_open_checklist_items(self, task_id: int) -> bool:
+        return self.task_repo.has_open_checklist_items(task_id)
+
+    def count_checklist_items(self, task_id: int) -> int:
+        return self.task_repo.count_checklist_items(task_id)
+    
+    def can_submit_task_to_review(self, task_id: int) -> tuple[bool, str | None]:
+        total_items = self.task_repo.count_checklist_items(task_id)
+        has_open = self.task_repo.has_open_checklist_items(task_id)
+
+        if total_items == 0:
+            return True, None
+
+        if has_open:
+            return False, "У задачи есть незавершённые пункты чеклиста."
+
+        return True, None
+    
+    def get_checklist_text_for_task(self, task_id: int) -> str:
+        items = self.task_repo.list_checklists(task_id)
+        if not items:
+            return ""
+
+        return self.format_checklist(items)

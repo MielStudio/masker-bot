@@ -339,6 +339,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/my_points — мои баллы\n"
         "/my_task — мои текущие задачи\n"
         "/submit_task — отправить свою задачу на проверку\n"
+        "/task_checklist — посмотреть чеклист задачи\n"
+        "/toggle_checkitem — отметить пункт чеклиста\n"
         "/get_task — взять новую задачу"
     )
     await safe_reply(update, context, text, parse_mode="HTML")
@@ -425,7 +427,17 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     def _run(task_service: TaskService):
         tasks = task_service.get_user_tasks(user_id)
-        return [task_service.task_to_legacy_dict(t) for t in tasks]
+
+        result = []
+        for t in tasks:
+            task_dict = task_service.task_to_legacy_dict(t)
+            checklist_text = task_service.get_checklist_text_for_task(t.id)
+            result.append({
+                "task": task_dict,
+                "checklist_text": checklist_text,
+            })
+
+        return result
 
     reserved_tasks = with_task_service(_run)
     print("reserved_tasks =", reserved_tasks)
@@ -434,14 +446,20 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lines = ["📝 <b>Твои текущие задачи:</b>", ""]
-    for task in reserved_tasks:
+    for item in reserved_tasks:
+        task = item["task"]
+        checklist_text = item["checklist_text"]
+
         status_str = format_task_status(task.get("status"))
         if task.get("deadline"):
             dt = datetime.fromisoformat(task["deadline"]).replace(tzinfo=WORK_TZ)
             deadline_str = format_datetime_rus(dt)
         else:
             deadline_str = "Не назначен"
-    
+
+        checklist_block = ""
+        if checklist_text:
+            checklist_block = f"\n📋 Чеклист:\n{checklist_text}"
 
         lines.append(
             f"🔹 <b>{task['title']}</b> (#{task['id']})\n"
@@ -450,6 +468,7 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📂 Тип: {task['type']}\n"
             f"🏆 Баллы: {task['points']}\n"
             f"⏰ Дедлайн: {deadline_str}"
+            f"{checklist_block}"
         )
         lines.append("")
 
@@ -491,6 +510,18 @@ async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update,
             context,
             f"⚠️ Задачу можно отправить на проверку только из статуса 'В работе'. Сейчас: {format_task_status(task.status)}"
+        )
+        return
+    
+    def _check(task_service: TaskService):
+        return task_service.can_submit_task_to_review(task_id)
+
+    can_submit, reason = with_task_service(_check)
+    if not can_submit:
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Нельзя отправить задачу #{task_id} на проверку.\n{reason}"
         )
         return
 
@@ -541,6 +572,96 @@ async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         pass
+
+async def task_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not context.args or not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ Используй: /task_checklist <ID задачи>")
+        return
+
+    task_id = int(context.args[0])
+
+    def _get(task_service: TaskService):
+        task = task_service.get_task_by_id(task_id)
+        items = task_service.list_checklists(task_id)
+        return task, items
+
+    result = with_task_service(_get)
+    task, items = result
+
+    if not task:
+        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
+        return
+
+    def _fmt(task_service: TaskService):
+        return task_service.format_checklist(items)
+
+    checklist_text = with_task_service(_fmt)
+
+    await safe_reply(
+        update,
+        context,
+        f"📋 <b>Чеклист задачи</b>\n\n"
+        f"🆔 #{task.id}\n"
+        f"🧩 <b>{html.escape(task.title)}</b>\n\n"
+        f"{checklist_text}",
+        parse_mode="HTML",
+    )
+
+async def toggle_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not context.args or not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ Используй: /toggle_checkitem <ID пункта>")
+        return
+
+    checklist_id = int(context.args[0])
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id if update.effective_user else None)
+
+    def _get_item(task_service: TaskService):
+        # временно через repo-метод сервиса нет прямого доступа, добавим через service позже если хочешь
+        return task_service.task_repo.get_checklist_item(checklist_id)
+
+    item_before = with_task_service(_get_item)
+    if not item_before:
+        await safe_reply(update, context, f"❌ Пункт чеклиста #{checklist_id} не найден.")
+        return
+
+    task_id = item_before.task_id
+    old_value = "done" if item_before.is_done else "not_done"
+
+    def _toggle(task_service: TaskService):
+        return task_service.toggle_checklist_item(checklist_id)
+
+    item = with_task_service(_toggle)
+    if not item:
+        await safe_reply(update, context, "❌ Не удалось изменить пункт чеклиста.")
+        return
+
+    new_value = "done" if item.is_done else "not_done"
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="toggle_checklist_item",
+            entity_type="task",
+            entity_id=task_id,
+            payload={"item_id": item.id, "title": item.title, "is_done": item.is_done}
+        )
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="checklist_toggled",
+            old_value=old_value,
+            new_value=new_value,
+            note=f"Изменён пункт чеклиста: {item.title}"
+        )
+
+    with_log_service(_log)
+
+    status_text = "✅ выполнен" if item.is_done else "⬜ снят"
+    await safe_reply(update, context, f"{status_text}: [{item.id}] {item.title}")
 
 # =========================
 # GET TASK FLOW
@@ -1175,6 +1296,8 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/add_task — создать новую задачу\n"
         "/set_deadline — изменить дедлайн задачи\n"
         "/run_overdue — проверить и отметить просроченные задачи\n"
+        "/add_checkitem — добавить пункт чеклиста\n"
+        "/delete_checkitem — удалить пункт чеклиста\n"
         "/logs [audit|errors|tasks|points] — посмотреть логи\n"
     )
     await safe_reply(update, context, help_text, parse_mode="HTML")
@@ -1902,6 +2025,111 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         await safe_reply(update, context, f"❌ Ошибка: {e}")
 
+async def add_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    if len(context.args) < 2 or not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ Используй: /add_checkitem <ID задачи> <текст пункта>")
+        return
+
+    task_id = int(context.args[0])
+    title = " ".join(context.args[1:]).strip()
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
+        return
+
+    def _add(task_service: TaskService):
+        return task_service.add_checklist_item(task_id, title)
+
+    item = with_task_service(_add)
+    if not item:
+        await safe_reply(update, context, "❌ Не удалось добавить пункт чеклиста.")
+        return
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="add_checklist_item",
+            entity_type="task",
+            entity_id=task_id,
+            payload={"item_id": item.id, "title": item.title}
+        )
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="checklist_added",
+            old_value=None,
+            new_value=item.title,
+            note="Добавлен пункт чеклиста"
+        )
+
+    with_log_service(_log)
+
+    await safe_reply(update, context, f"✅ Пункт чеклиста добавлен: [{item.id}] {item.title}")
+
+async def delete_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ Используй: /delete_checkitem <ID пункта>")
+        return
+
+    checklist_id = int(context.args[0])
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+
+    def _get_item(task_service: TaskService):
+        return task_service.task_repo.get_checklist_item(checklist_id)
+
+    item = with_task_service(_get_item)
+    if not item:
+        await safe_reply(update, context, f"❌ Пункт чеклиста #{checklist_id} не найден.")
+        return
+
+    task_id = item.task_id
+    item_title = item.title
+
+    def _delete(task_service: TaskService):
+        return task_service.delete_checklist_item(checklist_id)
+
+    ok = with_task_service(_delete)
+    if not ok:
+        await safe_reply(update, context, "❌ Не удалось удалить пункт чеклиста.")
+        return
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="delete_checklist_item",
+            entity_type="task",
+            entity_id=task_id,
+            payload={"item_id": checklist_id, "title": item_title}
+        )
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="checklist_deleted",
+            old_value=item_title,
+            new_value=None,
+            note="Удалён пункт чеклиста"
+        )
+
+    with_log_service(_log)
+
+    await safe_reply(update, context, f"🗑 Удалён пункт чеклиста: {item_title}")
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or not is_admin(update.effective_user.id):
@@ -2038,6 +2266,10 @@ def main():
     app.add_handler(CommandHandler("unblock_task", unblock_task))
     app.add_handler(CommandHandler("set_deadline", set_deadline))
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))
+    app.add_handler(CommandHandler("task_checklist", task_checklist))
+    app.add_handler(CommandHandler("add_checkitem", add_checkitem))
+    app.add_handler(CommandHandler("toggle_checkitem", toggle_checkitem))
+    app.add_handler(CommandHandler("delete_checkitem", delete_checkitem))
     app.add_handler(get_add_task_handler())
     app.add_handler(get_task_handler())
     app.add_error_handler(error_handler)

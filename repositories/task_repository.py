@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session, joinedload
 
-from database.models import Task, User, TaskAssignee, Project, WorkRole, TaskCategory
+from database.models import Task, User, TaskAssignee, Project, WorkRole, TaskCategory, TaskChecklist
 from datetime import datetime
 from config import TASK_STATUSES, TASK_STATUS_TRANSITIONS
 
@@ -313,4 +313,81 @@ class TaskRepository:
             .filter(Task.deadline_at < now)
             .filter(Task.status.in_(["available", "in_progress", "review"]))
             .all()
+        )
+    
+    def list_checklists(self, task_id: int) -> list[TaskChecklist]:
+        return (
+            self.db.query(TaskChecklist)
+            .filter(TaskChecklist.task_id == task_id)
+            .order_by(TaskChecklist.sort_order.asc().nullslast(), TaskChecklist.id.asc())
+            .all()
+        )
+
+    def get_checklist_item(self, checklist_id: int) -> TaskChecklist | None:
+        return (
+            self.db.query(TaskChecklist)
+            .filter(TaskChecklist.id == checklist_id)
+            .first()
+        )
+
+    def get_next_checklist_sort_order(self, task_id: int) -> int:
+        last_item = (
+            self.db.query(TaskChecklist)
+            .filter(TaskChecklist.task_id == task_id)
+            .order_by(TaskChecklist.sort_order.desc().nullslast(), TaskChecklist.id.desc())
+            .first()
+        )
+        if not last_item or last_item.sort_order is None:
+            return 1
+        return last_item.sort_order + 1
+
+    def add_checklist_item(self, task_id: int, title: str) -> TaskChecklist | None:
+        task = self.get_by_id(task_id)
+        if not task:
+            return None
+
+        item = TaskChecklist(
+            task_id=task_id,
+            title=title,
+            is_done=False,
+            sort_order=self.get_next_checklist_sort_order(task_id),
+        )
+        self.db.add(item)
+        self.db.commit()
+        self.db.refresh(item)
+        return item
+
+    def toggle_checklist_item(self, checklist_id: int) -> TaskChecklist | None:
+        item = self.get_checklist_item(checklist_id)
+        if not item:
+            return None
+
+        item.is_done = not item.is_done
+        self.db.commit()
+        self.db.refresh(item)
+        return item
+
+    def delete_checklist_item(self, checklist_id: int) -> bool:
+        item = self.get_checklist_item(checklist_id)
+        if not item:
+            return False
+
+        self.db.delete(item)
+        self.db.commit()
+        return True
+    
+    def has_open_checklist_items(self, task_id: int) -> bool:
+        return (
+            self.db.query(TaskChecklist)
+            .filter(TaskChecklist.task_id == task_id)
+            .filter(TaskChecklist.is_done.is_(False))
+            .count()
+            > 0
+        )
+
+    def count_checklist_items(self, task_id: int) -> int:
+        return (
+            self.db.query(TaskChecklist)
+            .filter(TaskChecklist.task_id == task_id)
+            .count()
         )
