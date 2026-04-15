@@ -26,11 +26,23 @@ class TaskService:
             project_value = task.project.title
 
         reserved_by = None
+        assignees = []
+
         active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
-        if active_links:
-            user = getattr(active_links[0], "user", None)
-            if user is not None:
+        for link in active_links:
+            user = getattr(link, "user", None)
+            if user is None:
+                continue
+
+            if reserved_by is None:
                 reserved_by = user.telegram_user_id
+
+            assignees.append({
+                "id": user.id,
+                "telegram_user_id": user.telegram_user_id,
+                "username": user.username,
+                "full_name": user.full_name,
+            })
         
         points = 0
         for attr in ("j_value", "c_value", "t_value"):
@@ -49,6 +61,9 @@ class TaskService:
             "reserved_by": reserved_by,
             "deadline": task.deadline_at.isoformat() if task.deadline_at else None,
             "status": task.status,
+            "assignees": assignees,
+            "assignees_count": len(assignees),
+            "max_assignees": task.max_assignees,
         }
 
     def get_available_tasks_for_user(self, project: str, user_record: dict) -> list[dict]:
@@ -376,3 +391,6 @@ class TaskService:
             return ""
 
         return self.format_checklist(items)
+    
+    def unassign_task_from_user(self, task_id: int, telegram_user_id: int):
+        return self.task_repo.unassign_task_from_user(task_id, telegram_user_id)

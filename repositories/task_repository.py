@@ -391,3 +391,43 @@ class TaskRepository:
             .filter(TaskChecklist.task_id == task_id)
             .count()
         )
+    
+    def unassign_task_from_user(self, task_id: int, telegram_user_id: int) -> Task | None:
+        task = self.get_by_id(task_id)
+        if not task:
+            return None
+
+        user = (
+            self.db.query(User)
+            .filter(User.telegram_user_id == telegram_user_id)
+            .first()
+        )
+        if not user:
+            return None
+
+        link = (
+            self.db.query(TaskAssignee)
+            .filter(TaskAssignee.task_id == task_id)
+            .filter(TaskAssignee.user_id == user.id)
+            .filter(TaskAssignee.is_active.is_(True))
+            .first()
+        )
+        if not link:
+            return None
+
+        link.is_active = False
+
+        active_links = (
+            self.db.query(TaskAssignee)
+            .filter(TaskAssignee.task_id == task_id)
+            .filter(TaskAssignee.is_active.is_(True))
+            .all()
+        )
+
+        if not active_links:
+            task.status = "available"
+            task.deadline_at = None
+
+        self.db.commit()
+        self.db.refresh(task)
+        return task

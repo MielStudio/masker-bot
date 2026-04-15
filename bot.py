@@ -1374,11 +1374,12 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
-    reserved_by = None
-    if active_links:
-        user = getattr(active_links[0], "user", None)
+    reserved_users = []
+
+    for link in active_links:
+        user = getattr(link, "user", None)
         if user:
-            reserved_by = user.telegram_user_id
+            reserved_users.append(user.telegram_user_id)
 
     task_title = task.title
 
@@ -1417,10 +1418,10 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, f"✅ Задача #{task_id} подтверждена и завершена.")
 
-    if reserved_by:
+    for tg_id in reserved_users:
         try:
             await context.bot.send_message(
-                chat_id=reserved_by,
+                chat_id=tg_id,
                 text=f"🎉 Задача <b>{task_title}</b> (#{task_id}) подтверждена администратором и завершена.",
                 parse_mode="HTML",
             )
@@ -1460,11 +1461,12 @@ async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
-    reserved_by = None
-    if active_links:
-        user = getattr(active_links[0], "user", None)
+    reserved_users = []
+
+    for link in active_links:
+        user = getattr(link, "user", None)
         if user:
-            reserved_by = user.telegram_user_id
+            reserved_users.append(user.telegram_user_id)
 
     task_title = task.title
 
@@ -1498,10 +1500,10 @@ async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, f"🛠 Задача #{task_id} возвращена в работу.")
 
-    if reserved_by:
+    for tg_id in reserved_users:
         try:
             await context.bot.send_message(
-                chat_id=reserved_by,
+                chat_id=tg_id,
                 text=f"⚠️ Задача <b>{task_title}</b> (#{task_id}) возвращена на доработку.",
                 parse_mode="HTML",
             )
@@ -1543,11 +1545,12 @@ async def block_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     task_title = task.title
 
     active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
-    reserved_by = None
-    if active_links:
-        user = getattr(active_links[0], "user", None)
+    reserved_users = []
+
+    for link in active_links:
+        user = getattr(link, "user", None)
         if user:
-            reserved_by = user.telegram_user_id
+            reserved_users.append(user.telegram_user_id)
 
     def _block(task_service: TaskService):
         return task_service.block_task(task_id)
@@ -1586,7 +1589,7 @@ async def block_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⛔ Задача #{task_id} заблокирована."
     )
 
-    if reserved_by:
+    for tg_id in reserved_users:
         try:
             text = (
                 f"⛔ <b>Задача заблокирована</b>\n\n"
@@ -1595,8 +1598,9 @@ async def block_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             if reason:
                 text += f"📝 Причина: {html.escape(reason)}"
+
             await context.bot.send_message(
-                chat_id=reserved_by,
+                chat_id=tg_id,
                 text=text,
                 parse_mode="HTML",
             )
@@ -1637,11 +1641,12 @@ async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     target_status = "in_progress" if active_links else "available"
     task_title = task.title
 
-    reserved_by = None
-    if active_links:
-        user = getattr(active_links[0], "user", None)
+    reserved_users = []
+
+    for link in active_links:
+        user = getattr(link, "user", None)
         if user:
-            reserved_by = user.telegram_user_id
+            reserved_users.append(user.telegram_user_id)
 
     def _unblock(task_service: TaskService):
         return task_service.unblock_task(task_id, target_status=target_status)
@@ -1680,10 +1685,10 @@ async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🟢 Задача #{task_id} разблокирована. Новый статус: {format_task_status(target_status)}"
     )
 
-    if reserved_by:
+    for tg_id in reserved_users:
         try:
             await context.bot.send_message(
-                chat_id=reserved_by,
+                chat_id=tg_id,
                 text=(
                     f"🟢 <b>Задача разблокирована</b>\n\n"
                     f"🆔 #{task_id}\n"
@@ -1702,11 +1707,28 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
         return
 
-    if not context.args or not context.args[0].isdigit():
-        await safe_reply(update, context, "⚠️ Используй: /unassign_task <ID задачи>")
+    if not context.args or len(context.args) < 2:
+        await safe_reply(
+            update,
+            context,
+            "⚠️ Используй: /unassign_task <ID задачи> <username>\n\nПример:\n/unassign_task 12 StanPaige"
+        )
+        return
+
+    if not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ ID задачи должен быть числом.")
         return
 
     task_id = int(context.args[0])
+    username = context.args[1].lstrip("@").strip().lower()
+
+    def _target(user_service: UserService):
+        return user_service.user_repo.get_by_username(username)
+
+    target_user = with_user_service(_target)
+    if not target_user:
+        await safe_reply(update, context, f"❌ Пользователь @{username} не найден.")
+        return
 
     def _get(task_service: TaskService):
         return task_service.get_task_by_id(task_id)
@@ -1716,20 +1738,33 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
         return
 
-    reserved_by = task.assignee.telegram_user_id if task.assignee else None
-    task_title = task.title
-    if not reserved_by:
-        await safe_reply(update, context, f"⚠️ Задача #{task_id} уже свободна.")
+    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+    active_user_ids = []
+    for link in active_links:
+        user = getattr(link, "user", None)
+        if user:
+            active_user_ids.append(user.telegram_user_id)
+
+    if target_user.telegram_user_id not in active_user_ids:
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Пользователь @{username} не является активным исполнителем задачи #{task_id}."
+        )
         return
 
+    task_title = task.title
+
     def _unassign(task_service: TaskService):
-        return task_service.unassign_task(task_id)
+        return task_service.unassign_task_from_user(task_id, target_user.telegram_user_id)
 
-
-    with_task_service(_unassign)
+    updated_task = with_task_service(_unassign)
+    if not updated_task:
+        await safe_reply(update, context, f"❌ Не удалось снять пользователя @{username} с задачи #{task_id}.")
+        return
 
     actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
-    removed_user_db_id = get_internal_user_id_by_tg(reserved_by)
+    removed_user_db_id = get_internal_user_id_by_tg(target_user.telegram_user_id)
 
     def _log(log_service: LogService):
         log_service.log_audit(
@@ -1740,7 +1775,8 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             payload={
                 "title": task_title,
                 "removed_from_user_id": removed_user_db_id,
-                "removed_from_telegram_user_id": reserved_by,
+                "removed_from_telegram_user_id": target_user.telegram_user_id,
+                "removed_from_username": target_user.username,
             }
         )
 
@@ -1750,20 +1786,35 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             action_type="unassigned",
             old_value=str(removed_user_db_id) if removed_user_db_id is not None else None,
             new_value=None,
-            note="Админ снял пользователя с задачи"
+            note=f"Админ снял пользователя @{username} с задачи"
         )
-    
+
     with_log_service(_log)
 
-    def _remove_events(event_repo: EventRepository):
-        return event_repo.remove_by_task_id(task_id)
+    # Если после снятия никого не осталось — удаляем дедлайн-события
+    remaining_active_links = [a for a in getattr(updated_task, "assignees", []) if getattr(a, "is_active", False)]
+    if not remaining_active_links:
+        def _remove_events(event_repo: EventRepository):
+            return event_repo.remove_by_task_id(task_id)
 
-    removed = with_event_repo(_remove_events)
-    await safe_reply(update, context, f"✅ Задача #{task_id} теперь свободна. Удалено связанных событий: {removed}.")
+        removed = with_event_repo(_remove_events)
+        await safe_reply(
+            update,
+            context,
+            f"✅ Пользователь @{username} снят с задачи #{task_id}. "
+            f"Задача снова свободна. Удалено связанных событий: {removed}."
+        )
+    else:
+        await safe_reply(
+            update,
+            context,
+            f"✅ Пользователь @{username} снят с задачи #{task_id}. "
+            f"У задачи всё ещё есть активные исполнители."
+        )
 
     try:
         await context.bot.send_message(
-            chat_id=reserved_by,
+            chat_id=target_user.telegram_user_id,
             text=f"⚠️ Задача <b>{task_title}</b> (#{task_id}) была снята с тебя администратором.",
             parse_mode="HTML",
         )
