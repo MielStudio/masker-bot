@@ -124,3 +124,24 @@ class LogRepository:
             .limit(limit)
             .all()
         )
+    
+    def get_points_ledger_by_user_id(self, user_id: int, limit: int = 20):
+        return (
+            self.db.query(PointsLedger)
+            .filter(PointsLedger.user_id == user_id)
+            .order_by(PointsLedger.id.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def get_recent_points_ledger_filtered(
+        self,
+        user_id: int | None = None,
+        limit: int = 20,
+    ):
+        query = self.db.query(PointsLedger)
+
+        if user_id is not None:
+            query = query.filter(PointsLedger.user_id == user_id)
+
+        return query.order_by(PointsLedger.id.desc()).limit(limit).all()

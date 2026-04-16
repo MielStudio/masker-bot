@@ -69,3 +69,9 @@ class LogService:
 
     def get_recent_points_ledger(self, limit=20):
         return self.repo.get_recent_points_ledger(limit)
+    
+    def get_points_ledger_by_user_id(self, user_id: int, limit: int = 20):
+        return self.log_repo.get_points_ledger_by_user_id(user_id, limit=limit)
+
+    def get_recent_points_ledger_filtered(self, user_id: int | None = None, limit: int = 20):
+        return self.log_repo.get_recent_points_ledger_filtered(user_id=user_id, limit=limit)

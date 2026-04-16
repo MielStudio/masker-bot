@@ -1385,6 +1385,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗝️ <b>Админ-команды:</b>\n\n"
         "/give_points — добавить баллы участнику\n"
         "/check_points — проверить баллы участника\n"
+        "/points_history [username] — история начислений баллов\n"
         "/task_done — пометить задачу выполненной\n"
         "/return_task — вернуть задачу на доработку\n"
         "/block_task — заблокировать задачу\n"
@@ -2445,6 +2446,86 @@ async def delete_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, f"🗑 Удалён пункт чеклиста: {item_title}")
 
+async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "❌ У тебя нет доступа к истории баллов.")
+        return
+
+    username = None
+    target_user = None
+
+    if context.args:
+        username = context.args[0].lstrip("@").strip().lower()
+
+        def _find_user(user_service: UserService):
+            return user_service.user_repo.get_by_username(username)
+
+        target_user = with_user_service(_find_user)
+        if not target_user:
+            await safe_reply(update, context, f"❌ Пользователь @{username} не найден.")
+            return
+
+        target_user_id = target_user.id
+    else:
+        target_user_id = None
+
+    def _run(log_service: LogService):
+        return log_service.get_recent_points_ledger_filtered(
+            user_id=target_user_id,
+            limit=30,
+        )
+
+    items = with_log_service(_run)
+    if not items:
+        if username:
+            await safe_reply(update, context, f"📭 История баллов для @{username} пуста.")
+        else:
+            await safe_reply(update, context, "📭 История баллов пуста.")
+        return
+
+    lines = []
+
+    if username:
+        lines.append(f"🏆 <b>История баллов @{html.escape(username)}</b>")
+    else:
+        lines.append("🏆 <b>Общая история баллов</b>")
+
+    lines.append("")
+
+    for item in items:
+        amount = int(item.amount) if item.amount is not None else 0
+        sign = "+" if amount >= 0 else ""
+        task_part = f"#{item.task_id}" if item.task_id else "—"
+        source_part = item.source_type or "unknown"
+        reason_part = item.reason or "Без причины"
+        k_part = f"\n⚖️ K: {item.k_value}" if getattr(item, "k_value", None) is not None else ""
+
+        created_at = getattr(item, "created_at", None)
+        if created_at:
+            try:
+                dt_text = format_datetime_rus(created_at.astimezone(WORK_TZ))
+            except Exception:
+                dt_text = created_at.strftime("%Y-%m-%d %H:%M")
+        else:
+            dt_text = "Дата неизвестна"
+
+        lines.append(
+            f"#{item.id} | user_id={item.user_id}\n"
+            f"🏆 {sign}{amount} баллов\n"
+            f"📌 Источник: {html.escape(source_part)}\n"
+            f"🧩 task_id: {task_part}"
+            f"{k_part}\n"
+            f"📝 {html.escape(reason_part)}\n"
+            f"🕒 {dt_text}"
+        )
+        lines.append("")
+
+    text = "\n".join(lines).strip()
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n...[обрезано]"
+
+    await safe_reply(update, context, text, parse_mode="HTML")
+
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or not is_admin(update.effective_user.id):
         await safe_reply(update, context, "❌ У тебя нет доступа к логам.")
@@ -2570,6 +2651,7 @@ def main():
 
     app.add_handler(CommandHandler("my_points", my_points))
     app.add_handler(CommandHandler("check_points", check_points))
+    app.add_handler(CommandHandler("points_history", points_history))
     app.add_handler(CommandHandler("my_task", my_task))
     app.add_handler(CommandHandler("submit_task", submit_task))
     app.add_handler(get_task_done_handler())
