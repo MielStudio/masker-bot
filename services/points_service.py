@@ -3,6 +3,7 @@ from __future__ import annotations
 from repositories.user_repository import UserRepository
 from repositories.log_repository import LogRepository
 from database.models import PointsLedger, Project
+from sqlalchemy import func
 
 
 class PointsService:
@@ -140,7 +141,7 @@ class PointsService:
             User.username,
             User.full_name,
             PointsLedger.user_id,
-            db.func.sum(PointsLedger.amount).label("total")
+            func.sum(PointsLedger.amount).label("total")
         ).join(PointsLedger, PointsLedger.user_id == User.id)
 
         if project_id:
@@ -149,7 +150,7 @@ class PointsService:
         results = (
             query
             .group_by(User.id)
-            .order_by(db.func.sum(PointsLedger.amount).desc())
+            .order_by(func.sum(PointsLedger.amount).desc())
             .all()
         )
 
