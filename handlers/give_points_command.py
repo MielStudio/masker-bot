@@ -29,20 +29,7 @@ def _all_usernames(get_points_service: Callable[[], PointsService]) -> List[str]
 
 
 def _all_projects(get_points_service: Callable[[], PointsService]) -> List[str]:
-    points_service = get_points_service()
-    users = points_service.user_repo.list_all()
-
-    projects = set()
-    for u in users:
-        for entry in u.point_entries:
-            if entry.project_name:
-                projects.add(entry.project_name)
-
-    if not projects:
-        projects = {"Non-project work"}
-
-    return sorted(projects, key=str.lower)
-
+        return ["Общее"]
 
 def _apply_points(
     get_points_service: Callable[[], PointsService],
@@ -56,7 +43,16 @@ def _apply_points(
         raise ValueError(f"Пользователь @{username} не найден")
 
     telegram_user_id = summary["user_id"]
-    ok = points_service.add_points(telegram_user_id, int(delta), project)
+
+    ok = points_service.add_points(
+        telegram_user_id=telegram_user_id,
+        points_to_add=int(delta),
+        project_id=1,
+        project_name=project,
+        reason="Ручное начисление админом",
+        source_type="manual",
+    )
+
     if not ok:
         raise ValueError(f"Не удалось начислить баллы пользователю @{username}")
 
