@@ -1,7 +1,12 @@
 from __future__ import annotations
 from datetime import datetime, timedelta
 from repositories.task_repository import TaskRepository
-from config import TASK_STATUS_LABELS, TASK_STATUS_RU
+from config import (
+    TASK_STATUS_LABELS,
+    TASK_STATUS_RU,
+    PRIORITY_LABELS,
+    PRIORITY_MULTIPLIERS,
+)
 
 
 class TaskService:
@@ -44,7 +49,7 @@ class TaskService:
                 "full_name": user.full_name,
             })
         
-        points = 0
+        points = self.calculate_task_points(task)
         for attr in ("j_value", "c_value", "t_value"):
             value = getattr(task, attr, None)
             if value:
@@ -56,7 +61,9 @@ class TaskService:
             "description": task.description,
             "type": type_value,
             "project": project_value,
-            "points": points,  # если позже захочешь, можно считать из J/C/T/K или отдельной формулы
+            "priority": task.priority,
+            "priority_label": self.format_priority_label(task.priority),
+            "points": points,
             "estimated_days": task.estimated_days,
             "reserved_by": reserved_by,
             "deadline": task.deadline_at.isoformat() if task.deadline_at else None,
@@ -263,10 +270,12 @@ class TaskService:
         est = task_dict.get("estimated_days")
         est_text = f"{est} дн." if est else "не указано"
         status_text = self.format_status_label(task_dict.get("status"))
+        priority_text = task_dict.get("priority_label") or self.format_priority_label(task_dict.get("priority"))
 
         return (
             f"🧩 <b>{task_dict['title']}</b>\n"
             f"📌 Статус: {status_text}\n"
+            f"⚡ Приоритет: {priority_text}\n"
             f"📁 Проект: {task_dict.get('project') or '—'}\n"
             f"👤 Роль: {task_dict.get('type') or '—'}\n"
             f"🏆 Баллы: {task_dict.get('points', 0)}\n"
@@ -394,3 +403,23 @@ class TaskService:
     
     def unassign_task_from_user(self, task_id: int, telegram_user_id: int):
         return self.task_repo.unassign_task_from_user(task_id, telegram_user_id)
+    
+    def format_priority_label(self, priority: str | None) -> str:
+        if not priority:
+            return "⚪ Неизвестный"
+        return PRIORITY_LABELS.get(priority, priority)
+
+    def get_priority_multiplier(self, priority: str | None) -> float:
+        if not priority:
+            return 1.0
+        return PRIORITY_MULTIPLIERS.get(priority, 1.0)
+
+    def calculate_task_points(self, task) -> int:
+        j = int(getattr(task, "j_value", 0) or 0)
+        c = int(getattr(task, "c_value", 0) or 0)
+        t = int(getattr(task, "t_value", 0) or 0)
+
+        base_points = j + c + t
+        multiplier = self.get_priority_multiplier(getattr(task, "priority", None))
+
+        return max(0, round(base_points * multiplier))

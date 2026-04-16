@@ -194,3 +194,21 @@ T_VALUE_MAX = 7
 
 K_BONUS_MIN = -3
 K_BONUS_MAX = 3
+
+# =========================
+# TASK PRIORITY
+# =========================
+
+PRIORITY_LABELS = {
+    "low": "🟢 Низкий",
+    "medium": "🟡 Средний",
+    "high": "🟠 Высокий",
+    "critical": "🔴 Критический",
+}
+
+PRIORITY_MULTIPLIERS = {
+    "low": 1.0,
+    "medium": 1.2,
+    "high": 1.5,
+    "critical": 2.0,
+}

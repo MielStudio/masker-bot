@@ -40,6 +40,8 @@ from config import (
     C_VALUE_MIN, C_VALUE_MAX,
     T_VALUE_MIN, T_VALUE_MAX,
     K_BONUS_MIN, K_BONUS_MAX,
+    PRIORITY_LABELS,
+    PRIORITY_MULTIPLIERS,
 )
 import traceback
 
@@ -323,7 +325,11 @@ def calculate_task_points(task) -> int:
     j = int(task.j_value or 0)
     c = int(task.c_value or 0)
     t = int(task.t_value or 0)
-    return j + c + t
+
+    base_points = j + c + t
+    multiplier = get_priority_multiplier(getattr(task, "priority", None))
+
+    return max(0, round(base_points * multiplier))
 
 def split_points_among_assignees(total_points: int, assignees_count: int) -> list[int]:
     if assignees_count <= 0:
@@ -362,6 +368,16 @@ def clear_task_done_data(context: ContextTypes.DEFAULT_TYPE):
         "task_done_base_points",
     ]:
         context.user_data.pop(key, None)
+
+def format_task_priority(priority: str | None) -> str:
+    if not priority:
+        return "⚪ Неизвестный"
+    return PRIORITY_LABELS.get(priority, priority)
+
+def get_priority_multiplier(priority: str | None) -> float:
+    if not priority:
+        return 1.0
+    return PRIORITY_MULTIPLIERS.get(priority, 1.0)
 
 # =========================
 # USER COMMANDS
@@ -517,9 +533,12 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if checklist_text:
             checklist_block = f"\n📋 Чеклист:\n{checklist_text}"
 
+        priority_str = format_task_priority(task.get("priority"))
+
         lines.append(
             f"🔹 <b>{task['title']}</b> (#{task['id']})\n"
             f"📌 Статус: {status_str}\n"
+            f"⚡ Приоритет: {priority_str}\n"
             f"📄 {task.get('description') or 'Без описания'}\n"
             f"📂 Тип: {task['type']}\n"
             f"🏆 Баллы: {task['points']}\n"
@@ -1481,11 +1500,14 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     context.user_data["task_done_base_points"] = base_points
 
+    priority_str = format_task_priority(getattr(task, "priority", None))
+    
     await safe_reply(
         update,
         context,
         f"✅ Подтверждение задачи #{task_id}\n\n"
         f"🧩 {task.title}\n"
+        f"⚡ Приоритет: {priority_str}\n"
         f"🏆 Базовые баллы: {base_points}\n\n"
         f"Введи коэффициент K от {K_BONUS_MIN} до {K_BONUS_MAX}.\n"
         f"Пример: -2, 0, 1, 3"
