@@ -1574,6 +1574,7 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     def _award_points(points_service: PointsService):
         awarded = []
+        # test comment
 
         for user_data, amount in zip(active_users_data, split_points):
             if amount <= 0:
@@ -1582,15 +1583,15 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ok = points_service.add_points(
                 telegram_user_id=user_data["telegram_user_id"],
                 points_to_add=amount,
-                project_id=project_id,
-                project_name=project_title,
+                project_id=1,  # временно, если пока нет нормального project_id в этом месте
+                project_name="Общее",
                 reason=f"Подтверждена задача #{task_id}: {task_title}",
                 task_id=task_id,
                 source_type="task_done",
                 created_by_user_id=actor_db_id,
-                j_value=j_value,
-                c_value=c_value,
-                t_value=t_value,
+                j_value=None,   # лучше ниже заполнить реальными значениями
+                c_value=None,
+                t_value=None,
                 k_value=k_bonus,
             )
 
