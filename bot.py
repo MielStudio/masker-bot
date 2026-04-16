@@ -415,7 +415,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/upcoming_events — ближайшие события\n"
         "/my_points — мои баллы\n"
         "/leaderboard — общий рейтинг участников\n"
-        "/leaderboard_project <ID> — рейтинг по проекту\n"
+        "/leaderboard_project &lt;ID&gt; — рейтинг по проекту\n"
         "/my_task — мои текущие задачи\n"
         "/submit_task — отправить свою задачу на проверку\n"
         "/task_checklist — посмотреть чеклист задачи\n"
