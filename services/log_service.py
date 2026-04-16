@@ -1,6 +1,6 @@
 class LogService:
-    def __init__(self, repo):
-        self.repo = repo
+    def __init__(self, log_repo):
+        self.repo = log_repo
 
     def log_audit(self, actor_user_id, action_type, entity_type, entity_id=None, payload=None):
         return self.repo.add_audit_log(
@@ -71,7 +71,7 @@ class LogService:
         return self.repo.get_recent_points_ledger(limit)
     
     def get_points_ledger_by_user_id(self, user_id: int, limit: int = 20):
-        return self.log_repo.get_points_ledger_by_user_id(user_id, limit=limit)
+        return self.repo.get_points_ledger_by_user_id(user_id, limit=limit)
 
     def get_recent_points_ledger_filtered(self, user_id: int | None = None, limit: int = 20):
-        return self.log_repo.get_recent_points_ledger_filtered(user_id=user_id, limit=limit)
+        return self.repo.get_recent_points_ledger_filtered(user_id=user_id, limit=limit)
