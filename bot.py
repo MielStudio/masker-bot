@@ -1554,6 +1554,11 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clear_task_done_data(context)
         await safe_reply(update, context, "⚠️ Контекст подтверждения задачи потерян. Запусти /task_done заново.")
         return ConversationHandler.END
+    
+    if not project_id:
+        clear_task_done_data(context)
+        await safe_reply(update, context, f"⚠️ У задачи #{task_id} не найден project_id. Проверь привязку задачи к проекту.")
+        return ConversationHandler.END
 
     final_points = apply_k_bonus(base_points, k_bonus)
     split_points = split_points_among_assignees(final_points, len(active_users_data))
@@ -1577,15 +1582,15 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ok = points_service.add_points(
                 telegram_user_id=user_data["telegram_user_id"],
                 points_to_add=amount,
-                project_id=1,  # временно, если пока нет нормального project_id в этом месте
-                project_name="Общее",
+                project_id=project_id,
+                project_name=project_title,
                 reason=f"Подтверждена задача #{task_id}: {task_title}",
                 task_id=task_id,
                 source_type="task_done",
                 created_by_user_id=actor_db_id,
-                j_value=None,   # лучше ниже заполнить реальными значениями
-                c_value=None,
-                t_value=None,
+                j_value=j_value,
+                c_value=c_value,
+                t_value=t_value,
                 k_value=k_bonus,
             )
 

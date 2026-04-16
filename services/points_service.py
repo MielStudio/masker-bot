@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from repositories.user_repository import UserRepository
 from repositories.log_repository import LogRepository
+from database.models import PointsLedger, Project
 
 
 class PointsService:
@@ -10,31 +11,58 @@ class PointsService:
         self.log_repo = log_repo
 
     def _build_project_summary(self, user) -> dict:
-        projects: dict[str, dict] = {}
+        db = self.user_repo.db
+        projects: dict[int, dict] = {}
 
+        # 1. Считаем баллы пользователя по каждому project_id
         for entry in getattr(user, "ledger_entries", []) or []:
+            project_id = getattr(entry, "project_id", None)
+            if not project_id:
+                continue
+
             project_title = "Без проекта"
             if getattr(entry, "project", None) and getattr(entry.project, "title", None):
                 project_title = entry.project.title
+            else:
+                project_row = db.query(Project).filter(Project.id == project_id).first()
+                if project_row and project_row.title:
+                    project_title = project_row.title
 
-            if project_title not in projects:
-                projects[project_title] = {
+            if project_id not in projects:
+                projects[project_id] = {
+                    "project_id": project_id,
+                    "project_title": project_title,
                     "points": 0,
                     "percent_rate": 0.0,
                 }
 
-            projects[project_title]["points"] += int(entry.amount or 0)
+            projects[project_id]["points"] += int(entry.amount or 0)
 
-        total_points = sum(item["points"] for item in projects.values())
+        # 2. Для каждого проекта считаем общий пул баллов всех участников проекта
+        for project_id, item in projects.items():
+            total_project_points = (
+                db.query(PointsLedger)
+                .filter(PointsLedger.project_id == project_id)
+                .with_entities(PointsLedger.amount)
+                .all()
+            )
 
-        if total_points > 0:
-            for item in projects.values():
-                item["percent_rate"] = item["points"] / total_points
-        else:
-            for item in projects.values():
+            total_project_sum = sum(int(row[0] or 0) for row in total_project_points)
+
+            if total_project_sum > 0:
+                item["percent_rate"] = item["points"] / total_project_sum
+            else:
                 item["percent_rate"] = 0.0
 
-        return projects
+        # 3. Возвращаем словарь по названию проекта, как ждёт bot.py
+        result: dict[str, dict] = {}
+        for item in projects.values():
+            result[item["project_title"]] = {
+                "points": item["points"],
+                "percent_rate": item["percent_rate"],
+            }
+
+        return result
 
     def get_user_points_summary(self, telegram_user_id: int) -> dict | None:
         user = self.user_repo.get_by_telegram_id(telegram_user_id)
