@@ -130,3 +130,36 @@ class PointsService:
 
     def recalculate_percent_rates(self) -> None:
         return
+    
+    def get_leaderboard(self, project_id: int | None = None):
+        db = self.user_repo.db
+
+        from database.models import PointsLedger, User
+
+        query = db.query(
+            User.username,
+            User.full_name,
+            PointsLedger.user_id,
+            db.func.sum(PointsLedger.amount).label("total")
+        ).join(PointsLedger, PointsLedger.user_id == User.id)
+
+        if project_id:
+            query = query.filter(PointsLedger.project_id == project_id)
+
+        results = (
+            query
+            .group_by(User.id)
+            .order_by(db.func.sum(PointsLedger.amount).desc())
+            .all()
+        )
+
+        leaderboard = []
+        for row in results:
+            leaderboard.append({
+                "username": row.username,
+                "full_name": row.full_name,
+                "user_id": row.user_id,
+                "points": int(row.total or 0)
+            })
+
+        return leaderboard

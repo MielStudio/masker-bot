@@ -414,6 +414,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help — показать список команд\n"
         "/upcoming_events — ближайшие события\n"
         "/my_points — мои баллы\n"
+        "/leaderboard — общий рейтинг участников\n"
+        "/leaderboard_project <ID> — рейтинг по проекту\n"
         "/my_task — мои текущие задачи\n"
         "/submit_task — отправить свою задачу на проверку\n"
         "/task_checklist — посмотреть чеклист задачи\n"
@@ -742,6 +744,58 @@ async def toggle_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status_text = "✅ выполнен" if item.is_done else "⬜ снят"
     await safe_reply(update, context, f"{status_text}: [{item.id}] {item.title}")
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+
+    def _run(points_service: PointsService):
+        return points_service.get_leaderboard()
+
+    data = with_points_service(_run)
+
+    if not data:
+        await safe_reply(update, context, "📭 Нет данных для лидерборда.")
+        return
+
+    lines = ["🏆 <b>Общий лидерборд:</b>", ""]
+
+    for i, user in enumerate(data[:10], start=1):
+        name = f"@{user['username']}" if user["username"] else user["full_name"]
+        lines.append(f"{i}. {name} — {user['points']} баллов")
+
+    await safe_reply(update, context, "\n".join(lines), parse_mode="HTML")
+
+async def leaderboard_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+
+    if not context.args:
+        await safe_reply(update, context, "⚠️ Используй: /leaderboard_project <ID проекта>")
+        return
+
+    if not context.args[0].isdigit():
+        await safe_reply(update, context, "⚠️ ID проекта должен быть числом.")
+        return
+
+    project_id = int(context.args[0])
+
+    def _run(points_service: PointsService):
+        return points_service.get_leaderboard(project_id=project_id)
+
+    data = with_points_service(_run)
+
+    if not data:
+        await safe_reply(update, context, "📭 Нет данных по проекту.")
+        return
+
+    lines = [f"🏆 <b>Лидерборд проекта #{project_id}:</b>", ""]
+
+    for i, user in enumerate(data[:10], start=1):
+        name = f"@{user['username']}" if user["username"] else user["full_name"]
+        lines.append(f"{i}. {name} — {user['points']} баллов")
+
+    await safe_reply(update, context, "\n".join(lines), parse_mode="HTML")
 
 # =========================
 # GET TASK FLOW
@@ -2677,6 +2731,8 @@ def main():
     app.add_handler(CommandHandler("my_points", my_points))
     app.add_handler(CommandHandler("check_points", check_points))
     app.add_handler(CommandHandler("points_history", points_history))
+    app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("leaderboard_project", leaderboard_project))
     app.add_handler(CommandHandler("my_task", my_task))
     app.add_handler(CommandHandler("submit_task", submit_task))
     app.add_handler(get_task_done_handler())
