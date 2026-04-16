@@ -321,7 +321,7 @@ def calculate_task_points(task) -> int:
     j = int(task.j_value or 0)
     c = int(task.c_value or 0)
     t = int(task.t_value or 0)
-    return j * c * t
+    return j + c + t
 
 def split_points_among_assignees(total_points: int, assignees_count: int) -> list[int]:
     if assignees_count <= 0:
