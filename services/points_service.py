@@ -3,10 +3,38 @@ from __future__ import annotations
 from repositories.user_repository import UserRepository
 from repositories.log_repository import LogRepository
 
+
 class PointsService:
     def __init__(self, user_repo: UserRepository, log_repo: LogRepository | None = None):
         self.user_repo = user_repo
         self.log_repo = log_repo
+
+    def _build_project_summary(self, user) -> dict:
+        projects: dict[str, dict] = {}
+
+        for entry in getattr(user, "ledger_entries", []) or []:
+            project_title = "Без проекта"
+            if getattr(entry, "project", None) and getattr(entry.project, "title", None):
+                project_title = entry.project.title
+
+            if project_title not in projects:
+                projects[project_title] = {
+                    "points": 0,
+                    "percent_rate": 0.0,
+                }
+
+            projects[project_title]["points"] += int(entry.amount or 0)
+
+        total_points = sum(item["points"] for item in projects.values())
+
+        if total_points > 0:
+            for item in projects.values():
+                item["percent_rate"] = item["points"] / total_points
+        else:
+            for item in projects.values():
+                item["percent_rate"] = 0.0
+
+        return projects
 
     def get_user_points_summary(self, telegram_user_id: int) -> dict | None:
         user = self.user_repo.get_by_telegram_id(telegram_user_id)
@@ -17,12 +45,7 @@ class PointsService:
             "user_id": user.telegram_user_id,
             "username": user.username,
             "full_name": user.full_name,
-            "projects": {
-                "Общее": {
-                    "points": int(user.total_points or 0),
-                    "percent_rate": 1.0,
-                }
-            },
+            "projects": self._build_project_summary(user),
         }
 
     def get_user_points_summary_by_username(self, username: str) -> dict | None:
@@ -34,20 +57,15 @@ class PointsService:
             "user_id": user.telegram_user_id,
             "username": user.username,
             "full_name": user.full_name,
-            "projects": {
-                "Общее": {
-                    "points": int(user.total_points or 0),
-                    "percent_rate": 1.0,
-                }
-            },
+            "projects": self._build_project_summary(user),
         }
 
     def add_points(
         self,
         telegram_user_id: int,
         points_to_add: int,
-        project_id: int = 1,
-        project_name: str = "Общее",
+        project_id: int,
+        project_name: str | None = None,
         reason: str | None = None,
         task_id: int | None = None,
         source_type: str = "manual",
@@ -83,5 +101,4 @@ class PointsService:
         return True
 
     def recalculate_percent_rates(self) -> None:
-        # Для MVP ничего не делаем.
         return

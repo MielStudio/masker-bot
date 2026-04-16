@@ -366,6 +366,11 @@ def clear_task_done_data(context: ContextTypes.DEFAULT_TYPE):
         "task_done_actor_db_id",
         "task_done_active_users",
         "task_done_base_points",
+        "task_done_project_id",
+        "task_done_project_title",
+        "task_done_j_value",
+        "task_done_c_value",
+        "task_done_t_value",
     ]:
         context.user_data.pop(key, None)
 
@@ -1487,6 +1492,10 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     base_points = calculate_task_points(task)
 
+    project_id = getattr(task, "project_id", None)
+    project_title = getattr(getattr(task, "project", None), "title", None) or "Без проекта"
+
+
     clear_task_done_data(context)
     context.user_data["task_done_task_id"] = task_id
     context.user_data["task_done_task_title"] = task.title
@@ -1500,6 +1509,11 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for user in active_users
     ]
     context.user_data["task_done_base_points"] = base_points
+    context.user_data["task_done_project_id"] = project_id
+    context.user_data["task_done_project_title"] = project_title
+    context.user_data["task_done_j_value"] = getattr(task, "j_value", None)
+    context.user_data["task_done_c_value"] = getattr(task, "c_value", None)
+    context.user_data["task_done_t_value"] = getattr(task, "t_value", None)
 
     priority_str = format_task_priority(getattr(task, "priority", None))
     
@@ -1530,6 +1544,11 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
     actor_db_id = context.user_data.get("task_done_actor_db_id")
     active_users_data = context.user_data.get("task_done_active_users", [])
     base_points = int(context.user_data.get("task_done_base_points", 0))
+    project_id = context.user_data.get("task_done_project_id")
+    project_title = context.user_data.get("task_done_project_title")
+    j_value = context.user_data.get("task_done_j_value")
+    c_value = context.user_data.get("task_done_c_value")
+    t_value = context.user_data.get("task_done_t_value")
 
     if not task_id or task_title is None or actor_db_id is None:
         clear_task_done_data(context)
