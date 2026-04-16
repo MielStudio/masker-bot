@@ -178,3 +178,16 @@ TASK_STATUS_TRANSITIONS = {
     "overdue": {"in_progress", "review", "done", "blocked"},
     "done": set(),
 }
+
+# =========================
+# JCT LIMITS
+# =========================
+
+J_VALUE_MIN = 1
+J_VALUE_MAX = 5
+
+C_VALUE_MIN = 1
+C_VALUE_MAX = 11
+
+T_VALUE_MIN = 1
+T_VALUE_MAX = 7

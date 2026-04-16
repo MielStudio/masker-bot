@@ -35,7 +35,10 @@ from services.log_service import LogService
 from handlers.give_points_command import build_give_points_handler
 from config import (
     ADMIN_ID, WORK_TZ, MONTH_NAMES, DEFAULT_PROJECTS, MAX_ACTIVE_TASKS_PER_USER,
-    TASK_STATUS_RU, TASK_STATUS_LABELS
+    TASK_STATUS_RU, TASK_STATUS_LABELS,
+    J_VALUE_MIN, J_VALUE_MAX,
+    C_VALUE_MIN, C_VALUE_MAX,
+    T_VALUE_MIN, T_VALUE_MAX,
 )
 import traceback
 
@@ -155,7 +158,6 @@ def get_user_by_id(user_id: int):
 
     return with_user_service(_run)
 
-
 async def safe_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, markup=None, parse_mode=None):
     target = update.effective_message
     if target:
@@ -209,10 +211,8 @@ async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TY
     )
     return False
 
-
 def is_admin(user_id: int | None) -> bool:
     return bool(user_id and user_id == ADMIN_ID)
-
 
 async def render_task_page(update_or_query, context, project: str, user_id: int, page: int = 1):
     user_record = get_user_by_id(user_id)
@@ -306,6 +306,35 @@ async def run_overdue_check(context: ContextTypes.DEFAULT_TYPE | None = None):
                     )
             except Exception:
                 pass
+
+def parse_ranged_int(text: str, min_value: int, max_value: int, field_name: str):
+    if not text.isdigit():
+        return None, f"⚠️ {field_name} должен быть целым числом."
+
+    value = int(text)
+    if not (min_value <= value <= max_value):
+        return None, f"⚠️ {field_name} должен быть в диапазоне {min_value}-{max_value}."
+
+    return value, None
+
+def calculate_task_points(task) -> int:
+    j = int(task.j_value or 0)
+    c = int(task.c_value or 0)
+    t = int(task.t_value or 0)
+    return j * c * t
+
+def split_points_among_assignees(total_points: int, assignees_count: int) -> list[int]:
+    if assignees_count <= 0:
+        return []
+
+    base = total_points // assignees_count
+    remainder = total_points % assignees_count
+
+    result = [base] * assignees_count
+    for i in range(remainder):
+        result[i] += 1
+
+    return result
 
 # =========================
 # USER COMMANDS
@@ -1120,38 +1149,61 @@ async def add_task_j(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return ConversationHandler.END
 
-    text = update.message.text.strip()
-    if not text.isdigit():
-        await safe_reply(update, context, "⚠️ Введи целое число J.")
+    value, error = parse_ranged_int(
+        update.message.text.strip(),
+        J_VALUE_MIN,
+        J_VALUE_MAX,
+        "J"
+    )
+    if error:
+        await safe_reply(update, context, error)
         return ADD_J
 
-    context.user_data["add_j"] = int(text)
-    await safe_reply(update, context, "🏆 Введи C value (например 5):")
+    context.user_data["add_j"] = value
+    await safe_reply(
+        update,
+        context,
+        f"🏆 Введи C value ({C_VALUE_MIN}-{C_VALUE_MAX}):"
+    )
     return ADD_C
 
 async def add_task_c(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return ConversationHandler.END
 
-    text = update.message.text.strip()
-    if not text.isdigit():
-        await safe_reply(update, context, "⚠️ Введи целое число C.")
+    value, error = parse_ranged_int(
+        update.message.text.strip(),
+        C_VALUE_MIN,
+        C_VALUE_MAX,
+        "C"
+    )
+    if error:
+        await safe_reply(update, context, error)
         return ADD_C
 
-    context.user_data["add_c"] = int(text)
-    await safe_reply(update, context, "🏆 Введи T value (например 5):")
+    context.user_data["add_c"] = value
+    await safe_reply(
+        update,
+        context,
+        f"🏆 Введи T value ({T_VALUE_MIN}-{T_VALUE_MAX}):"
+    )
     return ADD_T
 
 async def add_task_t(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return ConversationHandler.END
 
-    text = update.message.text.strip()
-    if not text.isdigit():
-        await safe_reply(update, context, "⚠️ Введи целое число T.")
+    value, error = parse_ranged_int(
+        update.message.text.strip(),
+        T_VALUE_MIN,
+        T_VALUE_MAX,
+        "T"
+    )
+    if error:
+        await safe_reply(update, context, error)
         return ADD_T
 
-    context.user_data["add_t"] = int(text)
+    context.user_data["add_t"] = value
 
     text = (
         "📋 <b>Проверь новую задачу:</b>\n\n"
@@ -1373,23 +1425,48 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
-    reserved_users = []
-
-    for link in active_links:
-        user = getattr(link, "user", None)
-        if user:
-            reserved_users.append(user.telegram_user_id)
-
     task_title = task.title
 
     def _approve(task_service: TaskService):
         return task_service.approve_task(task_id)
 
+
+    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+    active_users = []
+
+    for link in active_links:
+        user = getattr(link, "user", None)
+        if user:
+            active_users.append(user)
+
     updated = with_task_service(_approve)
     if not updated:
         await safe_reply(update, context, f"⚠️ Не удалось подтвердить задачу #{task_id}.")
         return
+
+    total_points = calculate_task_points(task)
+    split_points = split_points_among_assignees(total_points, len(active_users))
+
+    def _award_points(points_service: PointsService):
+        awarded = []
+
+        for user, amount in zip(active_users, split_points):
+            if amount <= 0:
+                continue
+
+            # ниже имя метода примерное:
+            # подставь свой реальный метод из PointsService
+            points_service.add_points(
+                telegram_user_id=user.telegram_user_id,
+                points_to_add=amount,
+                project_name="Общее",
+            )
+
+            awarded.append((user.telegram_user_id, amount))
+
+        return awarded
+
+    awarded_points = with_points_service(_award_points) or []
 
     def _log(log_service: LogService):
         log_service.log_audit(
@@ -1397,7 +1474,15 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             action_type="approve_task",
             entity_type="task",
             entity_id=task_id,
-            payload={"title": task_title}
+            payload={
+                "title": task_title,
+                "auto_points_total": total_points,
+                "assignees_count": len(active_users),
+                "awarded": [
+                    {"telegram_user_id": tg_id, "amount": amount}
+                    for tg_id, amount in awarded_points
+                ]
+            }
         )
 
         log_service.log_task_history(
@@ -1409,6 +1494,16 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
             note="Админ подтвердил задачу"
         )
 
+        for tg_id, amount in awarded_points:
+            log_service.log_task_history(
+                task_id=task_id,
+                actor_user_id=actor_db_id,
+                action_type="points_awarded",
+                old_value=None,
+                new_value=str(amount),
+                note=f"Автоначислены баллы пользователю tg={tg_id}"
+            )
+
     with_log_service(_log)
 
     def _remove_events(event_repo: EventRepository):
@@ -1416,13 +1511,32 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with_event_repo(_remove_events)
 
-    await safe_reply(update, context, f"✅ Задача #{task_id} подтверждена и завершена.")
+    if awarded_points:
+        awarded_text = "\n".join(
+            [f"• tg:{tg_id} — {amount} баллов" for tg_id, amount in awarded_points]
+        )
+        await safe_reply(
+            update,
+            context,
+            f"✅ Задача #{task_id} подтверждена и завершена.\n\n"
+            f"🏆 Баллы начислены автоматически:\n{awarded_text}"
+        )
+    else:
+        await safe_reply(
+            update,
+            context,
+            f"✅ Задача #{task_id} подтверждена и завершена.\n"
+            f"⚠️ Но активных исполнителей для начисления баллов не найдено."
+        )
 
-    for tg_id in reserved_users:
+    for (tg_id, amount) in awarded_points:
         try:
             await context.bot.send_message(
                 chat_id=tg_id,
-                text=f"🎉 Задача <b>{task_title}</b> (#{task_id}) подтверждена администратором и завершена.",
+                text=(
+                    f"🎉 Задача <b>{task_title}</b> (#{task_id}) подтверждена.\n"
+                    f"🏆 Тебе автоматически начислено: <b>{amount}</b> баллов."
+                ),
                 parse_mode="HTML",
             )
         except Exception:
