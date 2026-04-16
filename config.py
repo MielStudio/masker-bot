@@ -8,7 +8,7 @@ ADMIN_ID = 1847178297
 WORK_TZ = ZoneInfo("Europe/Kyiv")
 
 # Если позже перейдёшь на БД, это пригодится
-DATABASE_URL = "sqlite:////data/maskerbot.db"
+DATABASE_URL = "sqlite:///data/maskerbot.db"
 
 # =========================
 # IDLE REMINDER SETTINGS
