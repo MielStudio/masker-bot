@@ -80,7 +80,6 @@ def with_user_service(func):
     finally:
         db.close()
 
-
 def with_task_service(func):
     db = SessionLocal()
     try:
@@ -88,7 +87,6 @@ def with_task_service(func):
         return func(service)
     finally:
         db.close()
-
 
 def with_event_service(func):
     db = SessionLocal()
@@ -98,7 +96,6 @@ def with_event_service(func):
     finally:
         db.close()
 
-
 def with_event_repo(func):
     db = SessionLocal()
     try:
@@ -107,20 +104,23 @@ def with_event_repo(func):
     finally:
         db.close()
 
-
 def with_points_service(func):
     db = SessionLocal()
     try:
-        service = PointsService(UserRepository(db))
+        service = PointsService(
+            UserRepository(db),
+            LogRepository(db),
+        )
         return func(service)
     finally:
         db.close()
 
-
 def create_points_service():
     db = SessionLocal()
-    repo = UserRepository(db)
-    service = PointsService(repo)
+    service = PointsService(
+        UserRepository(db),
+        LogRepository(db),
+    )
     service._db = db
     return service
 
@@ -1557,7 +1557,16 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ok = points_service.add_points(
                 telegram_user_id=user_data["telegram_user_id"],
                 points_to_add=amount,
+                project_id=1,  # временно, если пока нет нормального project_id в этом месте
                 project_name="Общее",
+                reason=f"Подтверждена задача #{task_id}: {task_title}",
+                task_id=task_id,
+                source_type="task_done",
+                created_by_user_id=actor_db_id,
+                j_value=None,   # лучше ниже заполнить реальными значениями
+                c_value=None,
+                t_value=None,
+                k_value=k_bonus,
             )
 
             if ok:
@@ -1633,7 +1642,7 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update,
             context,
             f"✅ Задача #{task_id} подтверждена и завершена.\n\n"
-            f"🏆 База: {base_points}\n"
+            f"🏆 Баллы с учётом приоритета: {base_points}\n"
             f"⚖️ K: {k_bonus}\n"
             f"🎯 Итог: {final_points}\n\n"
             f"Начислено:\n" + "\n".join(lines)
@@ -1643,7 +1652,7 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update,
             context,
             f"✅ Задача #{task_id} подтверждена и завершена.\n\n"
-            f"🏆 База: {base_points}\n"
+            f"🏆 Баллы с учётом приоритета: {base_points}\n"
             f"⚖️ K: {k_bonus}\n"
             f"🎯 Итог: {final_points}\n\n"
             f"⚠️ Но активных исполнителей для начисления баллов не найдено."
