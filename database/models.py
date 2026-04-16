@@ -11,6 +11,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import func
 
 from database.db import Base
 
@@ -526,7 +527,7 @@ class PointsLedger(Base):
     k_value: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
-    created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     user: Mapped["User"] = relationship("User", back_populates="ledger_entries", foreign_keys=[user_id])
     project: Mapped["Project"] = relationship("Project", back_populates="ledger_entries")
