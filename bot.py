@@ -40,6 +40,7 @@ import traceback
 SELECT_PROJECT, SELECT_TASK, CONFIRM = range(3)
 TASK_DONE_K = 200
 MEETING_ATTENDANCE_INPUT = 300
+SUBMIT_SELECT_TASK = 400
 
 (
     ADD_PROJECT,
@@ -890,11 +891,45 @@ async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user:
         return
 
-    if not context.args or not context.args[0].isdigit():
-        await safe_reply(update, context, "⚠️ Используй: /submit_task <ID задачи>")
+    telegram_user_id = update.effective_user.id
+
+    # 1. если ID передан вручную — работаем по старому
+    if context.args and context.args[0].isdigit():
+        task_id = int(context.args[0])
+        return await submit_task_by_id(update, context, task_id)
+
+    # 2. если без ID — показываем выбор
+    if is_admin(telegram_user_id):
+        def _run(task_service: TaskService):
+            return task_service.get_submittable_tasks_for_admin()
+    else:
+        def _run(task_service: TaskService):
+            return task_service.get_submittable_tasks_for_user(telegram_user_id)
+
+    tasks = with_task_service(_run)
+
+    if not tasks:
+        await safe_reply(update, context, "😔 Нет задач, которые можно отправить на проверку.")
         return
 
-    task_id = int(context.args[0])
+    buttons = []
+    for task in tasks[:20]:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"#{task.id} • {task.title}",
+                callback_data=f"submit_select:{task.id}"
+            )
+        ])
+
+    markup = InlineKeyboardMarkup(buttons)
+    await safe_reply(
+        update,
+        context,
+        "🟡 Выбери задачу для отправки на проверку:",
+        markup=markup
+    )
+
+async def submit_task_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
     telegram_user_id = update.effective_user.id
     actor_db_id = get_internal_user_id_by_tg(telegram_user_id)
 
@@ -921,7 +956,7 @@ async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⚠️ Задачу можно отправить на проверку только из статуса 'В работе'. Сейчас: {format_task_status(task.status)}"
         )
         return
-    
+
     def _check(task_service: TaskService):
         return task_service.can_submit_task_to_review(task_id)
 
@@ -950,7 +985,6 @@ async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             entity_id=task_id,
             payload={"title": task.title}
         )
-
         log_service.log_task_history(
             task_id=task_id,
             actor_user_id=actor_db_id,
@@ -962,11 +996,8 @@ async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with_log_service(_log)
 
-    await safe_reply(
-        update,
-        context,
-        f"🟡 Задача #{task_id} отправлена на проверку."
-    ) 
+    await safe_reply(update, context, f"🟡 Задача #{task_id} отправлена на проверку.")
+
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
@@ -979,6 +1010,29 @@ async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
             parse_mode="HTML",
         )
+    except Exception:
+        pass
+
+async def submit_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("submit_select:"):
+        return
+
+    task_id = int(data.split(":")[1])
+
+    # чтобы safe_reply работал через callback
+    update.callback_query.message = query.message
+
+    await submit_task_by_id(update, context, task_id)
+
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
     except Exception:
         pass
 
@@ -3576,6 +3630,7 @@ def main():
     app.add_handler(CallbackQueryHandler(leaderboard_project_callback, pattern="^lb_proj:"))
     app.add_handler(CommandHandler("leaderboard_project", leaderboard_project))
     app.add_handler(CommandHandler("my_task", my_task))
+    app.add_handler(CallbackQueryHandler(submit_task_callback, pattern="^submit_select:"))
     app.add_handler(CommandHandler("submit_task", submit_task))
     app.add_handler(get_task_done_handler())
     app.add_handler(CommandHandler("return_task", return_task))

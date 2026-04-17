@@ -443,3 +443,17 @@ class TaskRepository:
             .order_by(Task.deadline_at.asc())
             .all()
         )
+    
+    def list_tasks_by_status(self, statuses: list[str]) -> list[Task]:
+        return (
+            self.db.query(Task)
+            .options(
+                joinedload(Task.assignees).joinedload(TaskAssignee.user),
+                joinedload(Task.project),
+                joinedload(Task.required_work_role),
+                joinedload(Task.category),
+            )
+            .filter(Task.status.in_(statuses))
+            .order_by(Task.id.asc())
+            .all()
+        )
