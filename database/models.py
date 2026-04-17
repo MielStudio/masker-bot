@@ -450,7 +450,7 @@ class Event(Base):
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     notified_24h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    notified_3h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notified_2h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     notified_30m: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     meeting_finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

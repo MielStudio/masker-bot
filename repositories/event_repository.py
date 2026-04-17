@@ -128,7 +128,6 @@ class EventRepository:
             )
             .filter(Event.notify_users.is_(True))
             .filter(Event.is_archived.is_(False))
-            .filter(Event.datetime_at >= now)
             .all()
         )
 
