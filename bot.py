@@ -493,13 +493,15 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
                 with_event_service(_mark2)
 
             if now >= dt:
-                if event.get("type") == "meeting" and not event.get("notified_start"):
-                    await send_event_notification(event, context, "start")
+                if event.get("type") == "meeting":
+                    if not event.get("notified_30m"):
+                        await send_event_notification(event, context, "start")
 
-                    def _mark_start(event_service: EventService):
-                        return event_service.mark_notified_start(event["id"])
+                        def _mark_start(event_service: EventService):
+                            return event_service.mark_notified_30m(event["id"])
 
-                    with_event_service(_mark_start)
+                        with_event_service(_mark_start)
+
                     continue
 
                 if event.get("task_id"):

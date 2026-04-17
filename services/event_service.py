@@ -20,6 +20,8 @@ class EventService:
             "task_id": event.related_task_id,
             "notified_24h": event.notified_24h,
             "notified_2h": getattr(event, "notified_2h", False),
+            "notified_30m": getattr(event, "notified_30m", False),
+            "notified_start": getattr(event, "notified_start", False),
             "is_archived": event.is_archived,
         }
 
@@ -104,4 +106,10 @@ class EventService:
     
     def get_attendance_by_event_id(self, event_id: int):
         return self.event_repo.get_attendance_by_event_id(event_id)
+    
+    def mark_notified_start(self, event_id: int) -> bool:
+        return self.event_repo.mark_notified_start(event_id)
+    
+    def mark_notified_30m(self, event_id: int) -> bool:
+        return self.event_repo.mark_notified_30m(event_id)
     

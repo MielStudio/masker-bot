@@ -346,3 +346,19 @@ class EventRepository:
             .filter(EventAttendance.event_id == event_id)
             .all()
         )
+    
+    def mark_notified_start(self, event_id: int) -> bool:
+        event = self.get_by_id(event_id)
+        if not event:
+            return False
+        event.notified_start = True
+        self.db.commit()
+        return True
+    
+    def mark_notified_30m(self, event_id: int) -> bool:
+        event = self.get_by_id(event_id)
+        if not event:
+            return False
+        event.notified_30m = True
+        self.db.commit()
+        return True
