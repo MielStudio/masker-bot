@@ -61,3 +61,25 @@ class EventService:
 
     def archive_event(self, event_id: int) -> bool:
         return self.event_repo.archive_event(event_id)
+    
+    def get_next_team_meeting(self, now):
+        event = self.event_repo.get_next_team_meeting(now)
+        if not event:
+            return None
+        return self.event_to_legacy_dict(event)
+
+    def create_team_meeting(self, title: str, description: str, dt_value, created_by_user_id: int | None = None):
+        event = self.event_repo.create_team_meeting(
+            title=title,
+            description=description,
+            dt_value=dt_value,
+            created_by_user_id=created_by_user_id,
+        )
+        return self.event_to_legacy_dict(event)
+
+    def update_event_datetime(self, event_id: int, new_dt):
+        event = self.event_repo.update_event_datetime(event_id, new_dt)
+        if not event:
+            return None
+        return self.event_to_legacy_dict(event)
+    
