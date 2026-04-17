@@ -21,7 +21,6 @@ class EventService:
             "notified_24h": event.notified_24h,
             "notified_2h": getattr(event, "notified_2h", False),
             "notified_30m": getattr(event, "notified_30m", False),
-            "notified_start": getattr(event, "notified_start", False),
             "is_archived": event.is_archived,
         }
 
@@ -34,22 +33,6 @@ class EventService:
         if not event:
             return None
         return self.event_to_legacy_dict(event)
-    
-    def event_to_legacy_dict(self, event) -> dict:
-        return {
-            "id": event.id,
-            "type": event.subtype or "event",
-            "title": event.title,
-            "description": event.description,
-            "datetime": event.datetime_at.isoformat() if event.datetime_at else None,
-            "notify_users": event.notify_users,
-            "personal": (event.scope == "personal"),
-            "users": [p.user.telegram_user_id for p in event.participants if p.user is not None],
-            "task_id": event.related_task_id,
-            "notified_24h": event.notified_24h,
-            "notified_2h": getattr(event, "notified_2h", False),
-            "is_archived": event.is_archived,
-        }
 
     def get_events_for_notifications(self, now) -> list[dict]:
         events = self.event_repo.list_for_notifications(now)
@@ -106,9 +89,6 @@ class EventService:
     
     def get_attendance_by_event_id(self, event_id: int):
         return self.event_repo.get_attendance_by_event_id(event_id)
-    
-    def mark_notified_start(self, event_id: int) -> bool:
-        return self.event_repo.mark_notified_start(event_id)
     
     def mark_notified_30m(self, event_id: int) -> bool:
         return self.event_repo.mark_notified_30m(event_id)

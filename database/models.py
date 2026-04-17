@@ -452,7 +452,6 @@ class Event(Base):
     notified_24h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     notified_2h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     notified_30m: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    notified_start: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     meeting_finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
