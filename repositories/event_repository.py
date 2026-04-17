@@ -218,3 +218,52 @@ class EventRepository:
         self.db.commit()
         self.db.refresh(event)
         return event
+    
+    def get_next_team_meeting(self, now: datetime) -> Event | None:
+        return (
+            self.db.query(Event)
+            .filter(Event.scope == "team")
+            .filter(Event.subtype == "meeting")
+            .filter(Event.is_archived.is_(False))
+            .filter(Event.datetime_at >= now)
+            .order_by(Event.datetime_at.asc())
+            .first()
+        )
+
+    def create_team_meeting(
+        self,
+        title: str,
+        description: str,
+        dt_value: datetime,
+        created_by_user_id: int | None = None,
+    ) -> Event:
+        event = Event(
+            scope="team",
+            subtype="meeting",
+            title=title,
+            description=description,
+            datetime_at=dt_value,
+            notify_users=True,
+            is_silent=False,
+            is_archived=False,
+            notified_24h=False,
+            notified_2h=False,
+            created_by_user_id=created_by_user_id,
+            created_at=datetime.utcnow(),
+        )
+        self.db.add(event)
+        self.db.commit()
+        self.db.refresh(event)
+        return event
+
+    def update_event_datetime(self, event_id: int, new_dt: datetime) -> Event | None:
+        event = self.get_by_id(event_id)
+        if not event:
+            return None
+
+        event.datetime_at = new_dt
+        event.notified_24h = False
+        event.notified_2h = False
+        self.db.commit()
+        self.db.refresh(event)
+        return event

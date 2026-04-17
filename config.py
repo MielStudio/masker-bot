@@ -213,4 +213,12 @@ PRIORITY_MULTIPLIERS = {
     "critical": 2.0,
 }
 
-# test comment you know
+# =========================
+# MEETING
+# =========================
+
+DEFAULT_MEETING_WEEKDAY = 2   # 0=понедельник, 1=вторник, 2=среда
+DEFAULT_MEETING_HOUR = 17
+DEFAULT_MEETING_MINUTE = 0
+
+MEETING_AUTO_CREATE_DAYS_AHEAD = 14

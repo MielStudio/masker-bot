@@ -1,6 +1,6 @@
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import html
 
 from telegram import (
@@ -33,20 +33,7 @@ from services.points_service import PointsService
 from repositories.log_repository import LogRepository
 from services.log_service import LogService
 from handlers.give_points_command import build_give_points_handler
-from config import (
-    ADMIN_ID, WORK_TZ, MONTH_NAMES, DEFAULT_PROJECTS, MAX_ACTIVE_TASKS_PER_USER,
-    TASK_STATUS_RU, TASK_STATUS_LABELS,
-    J_VALUE_MIN, J_VALUE_MAX,
-    C_VALUE_MIN, C_VALUE_MAX,
-    T_VALUE_MIN, T_VALUE_MAX,
-    K_BONUS_MIN, K_BONUS_MAX,
-    PRIORITY_LABELS,
-    PRIORITY_MULTIPLIERS,
-    REMINDER_24H_MIN_HOURS,
-    REMINDER_24H_MAX_HOURS,
-    REMINDER_2H_MIN_HOURS,
-    REMINDER_2H_MAX_HOURS,
-)
+from config import *S
 import traceback
 
 SELECT_PROJECT, SELECT_TASK, CONFIRM = range(3)
@@ -465,6 +452,47 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
 
         except Exception:
             pass
+
+def get_next_weekday_datetime(now: datetime, weekday: int, hour: int, minute: int) -> datetime:
+    days_ahead = (weekday - now.weekday()) % 7
+    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(days=days_ahead)
+
+    if candidate <= now:
+        candidate += timedelta(days=7)
+
+    return candidate
+
+async def ensure_weekly_meeting_exists(context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(WORK_TZ)
+
+    def _get(event_service: EventService):
+        return event_service.get_next_team_meeting(now)
+
+    next_meeting = with_event_service(_get)
+
+    if next_meeting:
+        dt = datetime.fromisoformat(next_meeting["datetime"]).replace(tzinfo=WORK_TZ)
+        delta_days = (dt - now).total_seconds() / 86400
+
+        if delta_days <= MEETING_AUTO_CREATE_DAYS_AHEAD:
+            return
+
+    meeting_dt = get_next_weekday_datetime(
+        now,
+        DEFAULT_MEETING_WEEKDAY,
+        DEFAULT_MEETING_HOUR,
+        DEFAULT_MEETING_MINUTE,
+    )
+
+    def _create(event_service: EventService):
+        return event_service.create_team_meeting(
+            title="Еженедельное собрание команды",
+            description="Автоматически созданное еженедельное собрание.",
+            dt_value=meeting_dt,
+            created_by_user_id=None,
+        )
+
+    with_event_service(_create)
 
 # =========================
 # USER COMMANDS
@@ -1545,6 +1573,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set_deadline — изменить дедлайн задачи\n"
         "/run_overdue — проверить и отметить просроченные задачи\n"
         "/overdue_tasks — показать все просроченные задачи\n"
+        "/set_next_meeting — изменить дату и время ближайшего собрания\n"
         "/add_checkitem — добавить пункт чеклиста\n"
         "/delete_checkitem — удалить пункт чеклиста\n"
         "/logs [audit|errors|tasks|points] — посмотреть логи\n"
@@ -2732,6 +2761,69 @@ async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, text, parse_mode="HTML")
 
+async def set_next_meeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    if len(context.args) < 2:
+        await safe_reply(
+            update,
+            context,
+            "⚠️ Используй: /set_next_meeting <YYYY-MM-DD> <HH:MM>\n"
+            "Пример: /set_next_meeting 2026-04-22 18:30"
+        )
+        return
+
+    raw_dt = f"{context.args[0]} {context.args[1]}"
+
+    try:
+        naive_dt = datetime.strptime(raw_dt, "%Y-%m-%d %H:%M")
+        new_dt = naive_dt.replace(tzinfo=WORK_TZ)
+    except ValueError:
+        await safe_reply(update, context, "⚠️ Формат даты: YYYY-MM-DD HH:MM")
+        return
+
+    now = datetime.now(WORK_TZ)
+
+    def _get(event_service: EventService):
+        return event_service.get_next_team_meeting(now)
+
+    next_meeting = with_event_service(_get)
+
+    if not next_meeting:
+        def _create(event_service: EventService):
+            return event_service.create_team_meeting(
+                title="Еженедельное собрание команды",
+                description="Создано администратором вручную.",
+                dt_value=new_dt,
+                created_by_user_id=get_internal_user_id_by_tg(update.effective_user.id),
+            )
+        created = with_event_service(_create)
+
+        await safe_reply(
+            update,
+            context,
+            f"✅ Ближайшее собрание создано на {format_datetime_rus(new_dt)}."
+        )
+        return
+
+    def _update(event_service: EventService):
+        return event_service.update_event_datetime(next_meeting["id"], new_dt)
+
+    updated = with_event_service(_update)
+    if not updated:
+        await safe_reply(update, context, "❌ Не удалось изменить ближайшее собрание.")
+        return
+
+    await safe_reply(
+        update,
+        context,
+        f"✅ Ближайшее собрание перенесено на {format_datetime_rus(new_dt)}."
+    )
+
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or not is_admin(update.effective_user.id):
         await safe_reply(update, context, "❌ У тебя нет доступа к логам.")
@@ -2822,6 +2914,13 @@ async def post_init(app: Application) -> None:
             name="event_auto_notify",
         )
 
+        app.job_queue.run_repeating(
+            ensure_weekly_meeting_exists,
+            interval=3600,
+            first=15,
+            name="ensure_weekly_meeting_exists",
+        )
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print("=== ERROR HANDLER ===")
     print("Update:", update)
@@ -2879,6 +2978,7 @@ def main():
     app.add_handler(CommandHandler("set_deadline", set_deadline))
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))
     app.add_handler(CommandHandler("overdue_tasks", show_overdue))
+    app.add_handler(CommandHandler("set_next_meeting", set_next_meeting))
     app.add_handler(CommandHandler("task_checklist", task_checklist))
     app.add_handler(CommandHandler("add_checkitem", add_checkitem))
     app.add_handler(CommandHandler("toggle_checkitem", toggle_checkitem))
