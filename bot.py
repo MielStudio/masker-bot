@@ -33,7 +33,7 @@ from services.points_service import PointsService
 from repositories.log_repository import LogRepository
 from services.log_service import LogService
 from handlers.give_points_command import build_give_points_handler
-from config import *S
+from config import *
 import traceback
 
 SELECT_PROJECT, SELECT_TASK, CONFIRM = range(3)
