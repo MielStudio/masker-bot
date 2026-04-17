@@ -29,6 +29,14 @@ class UserRepository:
     def list_all(self) -> list[User]:
         return self.db.query(User).all()
 
+    def list_active_team_members(self) -> list[User]:
+        return (
+            self.db.query(User)
+            .filter(User.is_active.is_(True))
+            .order_by(User.id.asc())
+            .all()
+        )
+
     def is_team_member(self, telegram_user_id: int) -> bool:
         return (
             self.db.query(User.id)

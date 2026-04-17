@@ -379,12 +379,20 @@ async def send_event_notification(event: dict, context: ContextTypes.DEFAULT_TYP
     dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
     when_str = format_datetime_rus(dt)
 
-    if wave == "24":
-        prefix = "⏰ Напоминание за 24 часа"
-    elif wave == "2":
-        prefix = "⏰ Напоминание за 2 часа"
+    if event.get("type") == "meeting":
+        if wave == "24":
+            prefix = "📢 Напоминание о собрании за 24 часа"
+        elif wave == "2":
+            prefix = "📢 Напоминание о собрании за 2 часа"
+        else:
+            prefix = "📢 Напоминание о собрании"
     else:
-        prefix = "⏰ Напоминание"
+        if wave == "24":
+            prefix = "⏰ Напоминание за 24 часа"
+        elif wave == "2":
+            prefix = "⏰ Напоминание за 2 часа"
+        else:
+            prefix = "⏰ Напоминание"
 
     task_line = f"\n🆔 Задача: #{event['task_id']}" if event.get("task_id") else ""
     desc = event.get("description") or "Без описания"
@@ -396,7 +404,18 @@ async def send_event_notification(event: dict, context: ContextTypes.DEFAULT_TYP
         f"📝 {html.escape(desc)}"
     )
 
-    for tg_user_id in event.get("users", []):
+    recipient_ids = []
+
+    if event.get("personal"):
+        recipient_ids = event.get("users", [])
+    else:
+        def _team_users(user_service: UserService):
+            users = user_service.user_repo.list_active_team_members()
+            return [u.telegram_user_id for u in users if getattr(u, "telegram_user_id", None)]
+
+        recipient_ids = with_user_service(_team_users)
+
+    for tg_user_id in recipient_ids:
         try:
             await context.bot.send_message(
                 chat_id=tg_user_id,
