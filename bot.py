@@ -893,12 +893,21 @@ async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     telegram_user_id = update.effective_user.id
 
-    # 1. если ID передан вручную — работаем по старому
     if context.args and context.args[0].isdigit():
         task_id = int(context.args[0])
-        return await submit_task_by_id(update, context, task_id)
 
-    # 2. если без ID — показываем выбор
+        async def reply_func(text: str):
+            await safe_reply(update, context, text)
+
+        await submit_task_by_id_common(
+            task_id=task_id,
+            telegram_user_id=telegram_user_id,
+            actor_username=update.effective_user.username,
+            reply_func=reply_func,
+            bot=context.bot,
+        )
+        return
+
     if is_admin(telegram_user_id):
         def _run(task_service: TaskService):
             return task_service.get_submittable_tasks_for_admin()
@@ -1013,9 +1022,96 @@ async def submit_task_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     except Exception:
         pass
 
+async def submit_task_by_id_common(
+    *,
+    task_id: int,
+    telegram_user_id: int,
+    actor_username: str | None,
+    reply_func,
+    bot,
+):
+    actor_db_id = get_internal_user_id_by_tg(telegram_user_id)
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await reply_func(f"❌ Задача #{task_id} не найдена.")
+        return
+
+    def _can_submit(task_service: TaskService):
+        return task_service.can_user_submit_task(task, telegram_user_id)
+
+    is_owner = with_task_service(_can_submit)
+    if not is_owner and not is_admin(telegram_user_id):
+        await reply_func("❌ Ты не можешь отправить эту задачу на проверку.")
+        return
+
+    if task.status != "in_progress":
+        await reply_func(
+            f"⚠️ Задачу можно отправить на проверку только из статуса 'В работе'. Сейчас: {format_task_status(task.status)}"
+        )
+        return
+
+    def _check(task_service: TaskService):
+        return task_service.can_submit_task_to_review(task_id)
+
+    can_submit, reason = with_task_service(_check)
+    if not can_submit:
+        await reply_func(
+            f"⚠️ Нельзя отправить задачу #{task_id} на проверку.\n{reason}"
+        )
+        return
+
+    def _submit(task_service: TaskService):
+        return task_service.submit_for_review(task_id)
+
+    updated = with_task_service(_submit)
+    if not updated:
+        await reply_func(f"❌ Не удалось отправить задачу #{task_id} на проверку.")
+        return
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="submit_task_for_review",
+            entity_type="task",
+            entity_id=task_id,
+            payload={"title": task.title}
+        )
+
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="status_changed",
+            old_value="in_progress",
+            new_value="review",
+            note="Задача отправлена на проверку"
+        )
+
+    with_log_service(_log)
+
+    await reply_func(f"🟡 Задача #{task_id} отправлена на проверку.")
+
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=(
+                f"🟡 <b>Задача отправлена на проверку</b>\n\n"
+                f"🆔 #{task_id}\n"
+                f"🧩 <b>{task.title}</b>\n"
+                f"👤 Отправил: @{actor_username or 'без username'}\n"
+                f"📌 Новый статус: {format_task_status('review')}"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
 async def submit_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if not query:
+    if not query or not update.effective_user:
         return
 
     await query.answer()
@@ -1025,16 +1121,18 @@ async def submit_task_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     task_id = int(data.split(":")[1])
+    telegram_user_id = update.effective_user.id
 
-    # чтобы safe_reply работал через callback
-    update.callback_query.message = query.message
+    async def reply_func(text: str):
+        await query.edit_message_text(text)
 
-    await submit_task_by_id(update, context, task_id)
-
-    try:
-        await query.edit_message_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    await submit_task_by_id_common(
+        task_id=task_id,
+        telegram_user_id=telegram_user_id,
+        actor_username=update.effective_user.username,
+        reply_func=reply_func,
+        bot=context.bot,
+    )
 
 async def task_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
