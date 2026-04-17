@@ -83,3 +83,25 @@ class EventService:
             return None
         return self.event_to_legacy_dict(event)
     
+    def get_last_started_meeting(self, now):
+        event = self.event_repo.get_last_started_meeting(now)
+        if not event:
+            return None
+        return self.event_to_legacy_dict(event)
+    
+    def finish_meeting(self, event_id: int, finished_at):
+        event = self.event_repo.finish_meeting(event_id, finished_at)
+        if not event:
+            return None
+        return self.event_to_legacy_dict(event)
+    
+    def save_attendance(self, event_id: int, present_tg_ids: list[int], marked_by_tg_id: int):
+        return self.event_repo.save_attendance(
+            event_id=event_id,
+            present_tg_ids=present_tg_ids,
+            marked_by_tg_id=marked_by_tg_id,
+        )
+    
+    def get_attendance_by_event_id(self, event_id: int):
+        return self.event_repo.get_attendance_by_event_id(event_id)
+    

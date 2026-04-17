@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy.orm import Session, joinedload
 
-from database.models import Event, EventParticipant, User, Task
+from database.models import Event, EventParticipant, EventAttendance, User, Task
 
 
 class EventRepository:
@@ -267,3 +267,82 @@ class EventRepository:
         self.db.commit()
         self.db.refresh(event)
         return event
+    
+    def save_attendance(
+        self,
+        event_id: int,
+        present_tg_ids: list[int],
+        marked_by_tg_id: int,
+    ):
+        # защита от повторного ввода
+        existing = (
+            self.db.query(EventAttendance)
+            .filter(EventAttendance.event_id == event_id)
+            .first()
+        )
+
+        if existing:
+            return None
+
+        users = (
+            self.db.query(User)
+            .filter(User.is_active.is_(True))
+            .all()
+        )
+
+        present_set = set(present_tg_ids)
+
+        marker = self.db.query(User).filter(
+            User.telegram_user_id == marked_by_tg_id
+        ).first()
+
+        marker_id = marker.id if marker else None
+
+        for user in users:
+            status = "present" if user.telegram_user_id in present_set else "absent"
+
+            self.db.add(
+                EventAttendance(
+                    event_id=event_id,
+                    user_id=user.id,
+                    status=status,
+                    marked_by_user_id=marker_id,
+                    marked_at=datetime.utcnow(),
+                )
+            )
+
+        self.db.commit()
+        return {
+            "event_id": event_id,
+            "present_count": len(present_set),
+            "present_tg_ids": list(present_set),
+        }
+    
+    def get_last_started_meeting(self, now: datetime) -> Event | None:
+        return (
+            self.db.query(Event)
+            .filter(Event.scope == "team")
+            .filter(Event.subtype == "meeting")
+            .filter(Event.datetime_at <= now)
+            .filter(Event.meeting_finished_at.is_(None))
+            .order_by(Event.datetime_at.desc())
+            .first()
+        )
+    
+    def finish_meeting(self, event_id: int, finished_at: datetime) -> Event | None:
+        event = self.get_by_id(event_id)
+        if not event:
+            return None
+
+        event.meeting_finished_at = finished_at
+        self.db.commit()
+        self.db.refresh(event)
+        return event
+    
+    def get_attendance_by_event_id(self, event_id: int):
+        return (
+            self.db.query(EventAttendance)
+            .options(joinedload(EventAttendance.user))
+            .filter(EventAttendance.event_id == event_id)
+            .all()
+        )

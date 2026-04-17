@@ -452,6 +452,7 @@ class Event(Base):
     notified_24h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     notified_2h: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     notified_30m: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    notified_start: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     meeting_finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
@@ -460,6 +461,7 @@ class Event(Base):
     project: Mapped["Project | None"] = relationship("Project", back_populates="events")
     related_task: Mapped["Task | None"] = relationship("Task", back_populates="events")
     created_by: Mapped["User | None"] = relationship("User", back_populates="created_events")
+
 
     participants: Mapped[list["EventParticipant"]] = relationship(
         "EventParticipant",
@@ -499,8 +501,12 @@ class EventAttendance(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id"), nullable=False)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
     marked_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    marked_by: Mapped["User | None"] = relationship(
+        "User",
+        foreign_keys=[marked_by_user_id]
+    )
     marked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
 

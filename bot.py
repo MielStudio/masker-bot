@@ -38,6 +38,7 @@ import traceback
 
 SELECT_PROJECT, SELECT_TASK, CONFIRM = range(3)
 TASK_DONE_K = 200
+MEETING_ATTENDANCE_INPUT = 300
 
 (
     ADD_PROJECT,
@@ -186,6 +187,35 @@ def clear_add_task_data(context: ContextTypes.DEFAULT_TYPE):
         "add_t",
     ]:
         context.user_data.pop(key, None)
+
+def clear_meeting_attendance_data(context: ContextTypes.DEFAULT_TYPE):
+    for key in [
+        "meeting_attendance_event_id",
+        "meeting_attendance_title",
+        "meeting_attendance_project_id",
+    ]:
+        context.user_data.pop(key, None)
+
+def parse_attendance_usernames(raw_text: str) -> list[str]:
+    parts = re.split(r"[\s,\n]+", raw_text.strip())
+    result = []
+
+    for part in parts:
+        name = part.strip().lstrip("@").lower()
+        if name:
+            result.append(name)
+
+    return list(dict.fromkeys(result))
+
+def get_teamwork_project_id():
+    def _run(task_service: TaskService):
+        projects = task_service.list_projects()
+        for p in projects:
+            if getattr(p, "title", None) == "Teamwork":
+                return p.id
+        return None
+
+    return with_task_service(_run)
 
 async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     user_id = update.effective_user.id if update.effective_user else None
@@ -463,8 +493,14 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
                 with_event_service(_mark2)
 
             if now >= dt:
-                if event.get("type") == "meeting":
+                if event.get("type") == "meeting" and not event.get("notified_start"):
                     await send_event_notification(event, context, "start")
+
+                    def _mark_start(event_service: EventService):
+                        return event_service.mark_notified_start(event["id"])
+
+                    with_event_service(_mark_start)
+                    continue
 
                 if event.get("task_id"):
                     await run_overdue_check(context)
@@ -1598,6 +1634,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/run_overdue — проверить и отметить просроченные задачи\n"
         "/overdue_tasks — показать все просроченные задачи\n"
         "/set_next_meeting — изменить дату и время ближайшего собрания\n"
+        "/finish_meeting — завершить собрание и внести attendance\n"
         "/add_checkitem — добавить пункт чеклиста\n"
         "/delete_checkitem — удалить пункт чеклиста\n"
         "/logs [audit|errors|tasks|points] — посмотреть логи\n"
@@ -1779,17 +1816,15 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             ok = points_service.add_points(
-                telegram_user_id=user_data["telegram_user_id"],
-                points_to_add=amount,
-                project_id=1,  # временно, если пока нет нормального project_id в этом месте
-                project_name="Общее",
+                project_id=project_id,
+                project_name=project_title,
                 reason=f"Подтверждена задача #{task_id}: {task_title}",
                 task_id=task_id,
                 source_type="task_done",
                 created_by_user_id=actor_db_id,
-                j_value=None,   # лучше ниже заполнить реальными значениями
-                c_value=None,
-                t_value=None,
+                j_value=j_value,
+                c_value=c_value,
+                t_value=t_value,
                 k_value=k_bonus,
             )
 
@@ -2848,6 +2883,202 @@ async def set_next_meeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ Ближайшее собрание перенесено на {format_datetime_rus(new_dt)}."
     )
 
+async def finish_meeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return ConversationHandler.END
+    if not update.effective_user or not is_admin(update.effective_user.id):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return ConversationHandler.END
+
+    now = datetime.now(WORK_TZ)
+
+    def _get(event_service: EventService):
+        return event_service.get_last_started_meeting(now)
+
+    meeting = with_event_service(_get)
+    if not meeting:
+        await safe_reply(update, context, "⚠️ Не найдено начатого собрания, которое можно завершить.")
+        return ConversationHandler.END
+
+    def _finish(event_service: EventService):
+        return event_service.finish_meeting(meeting["id"], now)
+
+    finished = with_event_service(_finish)
+    if not finished:
+        await safe_reply(update, context, "❌ Не удалось завершить собрание.")
+        return ConversationHandler.END
+
+    context.user_data["meeting_attendance_event_id"] = finished["id"]
+    context.user_data["meeting_attendance_title"] = finished["title"]
+    context.user_data["meeting_attendance_project_id"] = finished.get("project_id")
+
+    def _team_users(user_service: UserService):
+        users = user_service.user_repo.list_active_team_members()
+        return [u.telegram_user_id for u in users if getattr(u, "telegram_user_id", None)]
+
+    recipient_ids = with_user_service(_team_users)
+
+    for tg_user_id in recipient_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=tg_user_id,
+                text=(
+                    f"📢 <b>Собрание окончено</b>\n\n"
+                    f"📌 <b>{html.escape(finished['title'])}</b>"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    await safe_reply(
+        update,
+        context,
+        "✅ Собрание отмечено как завершённое.\n\n"
+        "Теперь отправь список присутствовавших участников.\n"
+        "Пример:\n"
+        "@StanPaige @user2 @user3"
+    )
+    return MEETING_ATTENDANCE_INPUT
+
+async def finish_meeting_attendance_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text or not update.effective_user:
+        clear_meeting_attendance_data(context)
+        return ConversationHandler.END
+
+    event_id = context.user_data.get("meeting_attendance_event_id")
+    meeting_title = context.user_data.get("meeting_attendance_title")
+
+    if not event_id:
+        clear_meeting_attendance_data(context)
+        await safe_reply(update, context, "⚠️ Контекст attendance потерян. Запусти /finish_meeting заново.")
+        return ConversationHandler.END
+
+    usernames = parse_attendance_usernames(update.message.text)
+
+    if not usernames:
+        await safe_reply(update, context, "⚠️ Не удалось распознать usernames. Отправь список вида: @user1 @user2")
+        return MEETING_ATTENDANCE_INPUT
+
+    def _find_users(user_service: UserService):
+        found = []
+        for username in usernames:
+            user = user_service.user_repo.get_by_username(username)
+            if user:
+                found.append(user)
+        return found
+
+    found_users = with_user_service(_find_users)
+    if not found_users:
+        await safe_reply(update, context, "⚠️ Ни один пользователь не найден. Проверь usernames.")
+        return MEETING_ATTENDANCE_INPUT
+
+    present_tg_ids = [u.telegram_user_id for u in found_users]
+
+    def _save(event_service: EventService):
+        return event_service.save_attendance(
+            event_id=event_id,
+            present_tg_ids=present_tg_ids,
+            marked_by_tg_id=update.effective_user.id,
+        )
+
+    save_result = with_event_service(_save)
+    if save_result is None:
+        clear_meeting_attendance_data(context)
+        await safe_reply(update, context, "⚠️ Attendance для этого собрания уже был внесён ранее.")
+        return ConversationHandler.END
+
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+
+    project_id = get_teamwork_project_id()
+    if not project_id:
+        clear_meeting_attendance_data(context)
+        await safe_reply(update, context, "⚠️ Не найден проект Teamwork для начисления баллов за attendance.")
+        return ConversationHandler.END
+
+    awarded = []
+
+    def _award(points_service: PointsService):
+        local_awarded = []
+        for user in found_users:
+            ok = points_service.add_points(
+                telegram_user_id=user.telegram_user_id,
+                points_to_add=5,
+                project_id=project_id,
+                project_name="Teamwork",
+                reason=f"Посещение собрания #{event_id}: {meeting_title}",
+                event_id=event_id,
+                source_type="meeting_attendance",
+                created_by_user_id=actor_db_id,
+            )
+            if ok:
+                local_awarded.append(user)
+        return local_awarded
+
+    awarded_users = with_points_service(_award) or []
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="save_meeting_attendance",
+            entity_type="event",
+            entity_id=event_id,
+            payload={
+                "title": meeting_title,
+                "present_usernames": [u.username for u in found_users],
+                "present_count": len(found_users),
+            }
+        )
+
+    with_log_service(_log)
+
+    present_labels = []
+    for user in awarded_users:
+        label = f"@{user.username}" if user.username else user.full_name or str(user.telegram_user_id)
+        present_labels.append(label)
+
+    await safe_reply(
+        update,
+        context,
+        "✅ Attendance сохранён.\n\n"
+        f"👥 Присутствовали: {len(awarded_users)}\n"
+        f"🏆 Всем отмеченным начислено +5 баллов.\n\n"
+        + "\n".join(f"• {name}" for name in present_labels)
+    )
+
+    for user in awarded_users:
+        try:
+            await context.bot.send_message(
+                chat_id=user.telegram_user_id,
+                text=(
+                    f"✅ Ты отмечен как присутствовавший на собрании.\n"
+                    f"🏆 Начислено <b>+5</b> баллов."
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+    clear_meeting_attendance_data(context)
+    return ConversationHandler.END
+
+async def finish_meeting_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    clear_meeting_attendance_data(context)
+    await safe_reply(update, context, "❌ Ввод attendance отменён.")
+    return ConversationHandler.END
+
+def get_finish_meeting_handler():
+    return ConversationHandler(
+        entry_points=[CommandHandler("finish_meeting", finish_meeting)],
+        states={
+            MEETING_ATTENDANCE_INPUT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, finish_meeting_attendance_input)
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", finish_meeting_cancel)],
+        allow_reentry=True,
+    )
+
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or not is_admin(update.effective_user.id):
         await safe_reply(update, context, "❌ У тебя нет доступа к логам.")
@@ -3007,6 +3238,7 @@ def main():
     app.add_handler(CommandHandler("add_checkitem", add_checkitem))
     app.add_handler(CommandHandler("toggle_checkitem", toggle_checkitem))
     app.add_handler(CommandHandler("delete_checkitem", delete_checkitem))
+    app.add_handler(get_finish_meeting_handler())
     app.add_handler(get_add_task_handler())
     app.add_handler(get_task_handler())
     app.add_error_handler(error_handler)
