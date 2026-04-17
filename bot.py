@@ -656,6 +656,12 @@ async def apply_user_command_scope(bot, user_id: int):
     commands = build_user_bot_commands(user_id)
     await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=user_id))
 
+def get_user_active_tasks_for_ui(telegram_user_id: int):
+    def _run(task_service: TaskService):
+        tasks = task_service.get_user_tasks(telegram_user_id)
+        return [task_service.task_to_legacy_dict(t) for t in tasks]
+    return with_task_service(_run)
+
 # =========================
 # USER COMMANDS
 # =========================
@@ -884,6 +890,10 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, "\n".join(lines).strip(), parse_mode="HTML")
 
+
+# =========================
+# Submit task
+# =========================
 
 async def submit_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -1134,15 +1144,52 @@ async def submit_task_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         bot=context.bot,
     )
 
+# =========================
+# Checklist
+# =========================
+
 async def task_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not context.args or not context.args[0].isdigit():
-        await safe_reply(update, context, "⚠️ Используй: /task_checklist <ID задачи>")
+    if not update.effective_user:
         return
 
-    task_id = int(context.args[0])
+    telegram_user_id = update.effective_user.id
 
+    # Старый режим по ID оставляем
+    if context.args and context.args[0].isdigit():
+        task_id = int(context.args[0])
+        return await show_task_checklist_by_id(update, context, task_id)
+
+    # Новый режим — выбор задачи кнопками
+    def _run(task_service: TaskService):
+        tasks = task_service.get_user_tasks(telegram_user_id)
+        return [task_service.task_to_legacy_dict(t) for t in tasks]
+
+    tasks = with_task_service(_run)
+
+    if not tasks:
+        await safe_reply(update, context, "😔 У тебя нет активных задач.")
+        return
+
+    buttons = []
+    for task in tasks[:20]:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"#{task['id']} • {task['title']}",
+                callback_data=f"checklist_task_select:{task['id']}"
+            )
+        ])
+
+    markup = InlineKeyboardMarkup(buttons)
+    await safe_reply(
+        update,
+        context,
+        "📋 Выбери задачу, чтобы посмотреть чеклист:",
+        markup=markup
+    )
+
+async def show_task_checklist_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE, task_id: int):
     def _get(task_service: TaskService):
         task = task_service.get_task_by_id(task_id)
         items = task_service.list_checklists(task_id)
@@ -1170,18 +1217,87 @@ async def task_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML",
     )
 
+async def task_checklist_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("checklist_task_select:"):
+        return
+
+    task_id = int(data.split(":")[1])
+
+    def _get(task_service: TaskService):
+        task = task_service.get_task_by_id(task_id)
+        items = task_service.list_checklists(task_id)
+        return task, items
+
+    task, items = with_task_service(_get)
+
+    if not task:
+        await query.edit_message_text(f"❌ Задача #{task_id} не найдена.")
+        return
+
+    def _fmt(task_service: TaskService):
+        return task_service.format_checklist(items)
+
+    checklist_text = with_task_service(_fmt)
+
+    await query.edit_message_text(
+        f"📋 <b>Чеклист задачи</b>\n\n"
+        f"🆔 #{task.id}\n"
+        f"🧩 <b>{html.escape(task.title)}</b>\n\n"
+        f"{checklist_text}",
+        parse_mode="HTML",
+    )
+
 async def toggle_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not context.args or not context.args[0].isdigit():
-        await safe_reply(update, context, "⚠️ Используй: /toggle_checkitem <ID пункта>")
+    if not update.effective_user:
         return
 
-    checklist_id = int(context.args[0])
+    telegram_user_id = update.effective_user.id
+
+    # Старый режим по ID оставляем
+    if context.args and context.args[0].isdigit():
+        checklist_id = int(context.args[0])
+        return await toggle_checkitem_by_id(update, context, checklist_id)
+
+    def _run(task_service: TaskService):
+        tasks = task_service.get_user_tasks(telegram_user_id)
+        return [task_service.task_to_legacy_dict(t) for t in tasks]
+
+    tasks = with_task_service(_run)
+
+    if not tasks:
+        await safe_reply(update, context, "😔 У тебя нет активных задач.")
+        return
+
+    buttons = []
+    for task in tasks[:20]:
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"#{task['id']} • {task['title']}",
+                callback_data=f"toggle_task_select:{task['id']}"
+            )
+        ])
+
+    markup = InlineKeyboardMarkup(buttons)
+    await safe_reply(
+        update,
+        context,
+        "✅ Выбери задачу, в которой хочешь изменить чеклист:",
+        markup=markup
+    )
+
+async def toggle_checkitem_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE, checklist_id: int):
     actor_db_id = get_internal_user_id_by_tg(update.effective_user.id if update.effective_user else None)
 
     def _get_item(task_service: TaskService):
-        # временно через repo-метод сервиса нет прямого доступа, добавим через service позже если хочешь
         return task_service.task_repo.get_checklist_item(checklist_id)
 
     item_before = with_task_service(_get_item)
@@ -1223,6 +1339,113 @@ async def toggle_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     status_text = "✅ выполнен" if item.is_done else "⬜ снят"
     await safe_reply(update, context, f"{status_text}: [{item.id}] {item.title}")
+
+async def toggle_checkitem_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("toggle_task_select:"):
+        return
+
+    task_id = int(data.split(":")[1])
+
+    def _get(task_service: TaskService):
+        task = task_service.get_task_by_id(task_id)
+        items = task_service.list_checklists(task_id)
+        return task, items
+
+    task, items = with_task_service(_get)
+
+    if not task:
+        await query.edit_message_text(f"❌ Задача #{task_id} не найдена.")
+        return
+
+    if not items:
+        await query.edit_message_text("📋 У этой задачи пока нет чеклиста.")
+        return
+
+    buttons = []
+    for item in items:
+        mark = "✅" if item.is_done else "⬜"
+        buttons.append([
+            InlineKeyboardButton(
+                text=f"{mark} {item.title}",
+                callback_data=f"toggle_item_select:{item.id}"
+            )
+        ])
+
+    await query.edit_message_text(
+        f"📋 <b>{html.escape(task.title)}</b>\n\nВыбери пункт для переключения:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+
+async def toggle_checkitem_item_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not update.effective_user:
+        return
+
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("toggle_item_select:"):
+        return
+
+    checklist_id = int(data.split(":")[1])
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+
+    def _get_item(task_service: TaskService):
+        return task_service.task_repo.get_checklist_item(checklist_id)
+
+    item_before = with_task_service(_get_item)
+    if not item_before:
+        await query.edit_message_text(f"❌ Пункт чеклиста #{checklist_id} не найден.")
+        return
+
+    task_id = item_before.task_id
+    old_value = "done" if item_before.is_done else "not_done"
+
+    def _toggle(task_service: TaskService):
+        return task_service.toggle_checklist_item(checklist_id)
+
+    item = with_task_service(_toggle)
+    if not item:
+        await query.edit_message_text("❌ Не удалось изменить пункт чеклиста.")
+        return
+
+    new_value = "done" if item.is_done else "not_done"
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="toggle_checklist_item",
+            entity_type="task",
+            entity_id=task_id,
+            payload={"item_id": item.id, "title": item.title, "is_done": item.is_done}
+        )
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="checklist_toggled",
+            old_value=old_value,
+            new_value=new_value,
+            note=f"Изменён пункт чеклиста: {item.title}"
+        )
+
+    with_log_service(_log)
+
+    mark = "✅" if item.is_done else "⬜"
+    await query.edit_message_text(
+        f"{mark} Пункт обновлён:\n\n[{item.id}] {item.title}"
+    )
+
+# =========================
+# leaderboard
+# =========================
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -3744,6 +3967,9 @@ def main():
     app.add_handler(CommandHandler("add_checkitem", add_checkitem))
     app.add_handler(CommandHandler("toggle_checkitem", toggle_checkitem))
     app.add_handler(CommandHandler("delete_checkitem", delete_checkitem))
+    app.add_handler(CallbackQueryHandler(task_checklist_callback, pattern="^checklist_task_select:"))
+    app.add_handler(CallbackQueryHandler(toggle_checkitem_task_callback, pattern="^toggle_task_select:"))
+    app.add_handler(CallbackQueryHandler(toggle_checkitem_item_callback, pattern="^toggle_item_select:"))
     app.add_handler(get_finish_meeting_handler())
     app.add_handler(get_add_task_handler())
     app.add_handler(get_task_handler())
