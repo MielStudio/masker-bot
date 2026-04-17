@@ -1544,6 +1544,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/add_task — создать новую задачу\n"
         "/set_deadline — изменить дедлайн задачи\n"
         "/run_overdue — проверить и отметить просроченные задачи\n"
+        "/overdue_tasks — показать все просроченные задачи\n"
         "/add_checkitem — добавить пункт чеклиста\n"
         "/delete_checkitem — удалить пункт чеклиста\n"
         "/logs [audit|errors|tasks|points] — посмотреть логи\n"
@@ -2406,6 +2407,29 @@ async def run_overdue_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, "\n".join(lines))
 
+async def show_overdue(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    def _run(task_service: TaskService):
+        return task_service.get_all_overdue_tasks()
+
+    tasks = with_task_service(_run)
+
+    if not tasks:
+        await safe_reply(update, context, "✅ Нет просроченных задач.")
+        return
+
+    lines = ["🔥 <b>Просроченные задачи:</b>", ""]
+
+    for task in tasks:
+        dt = format_datetime_rus(task.deadline_at) if task.deadline_at else "—"
+
+        lines.append(
+            f"• #{task.id} — {task.title}\n"
+            f"⏰ Дедлайн: {dt}"
+        )
+        lines.append("")
+
+    await safe_reply(update, context, "\n".join(lines), parse_mode="HTML")
+
 async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
@@ -2854,6 +2878,7 @@ def main():
     app.add_handler(CommandHandler("unblock_task", unblock_task))
     app.add_handler(CommandHandler("set_deadline", set_deadline))
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))
+    app.add_handler(CommandHandler("overdue_tasks", show_overdue))
     app.add_handler(CommandHandler("task_checklist", task_checklist))
     app.add_handler(CommandHandler("add_checkitem", add_checkitem))
     app.add_handler(CommandHandler("toggle_checkitem", toggle_checkitem))

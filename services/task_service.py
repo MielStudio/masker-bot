@@ -423,3 +423,6 @@ class TaskService:
         multiplier = self.get_priority_multiplier(getattr(task, "priority", None))
 
         return max(0, round(base_points * multiplier))
+    
+    def get_all_overdue_tasks(self):
+        return self.task_repo.list_overdue_tasks()

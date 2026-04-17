@@ -431,3 +431,15 @@ class TaskRepository:
         self.db.commit()
         self.db.refresh(task)
         return task
+    
+    def list_overdue_tasks(self) -> list[Task]:
+        return (
+            self.db.query(Task)
+            .options(
+                joinedload(Task.assignees).joinedload(TaskAssignee.user),
+                joinedload(Task.project),
+            )
+            .filter(Task.status == "overdue")
+            .order_by(Task.deadline_at.asc())
+            .all()
+        )
