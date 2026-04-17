@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database.models import User
@@ -53,3 +54,24 @@ class UserRepository:
         user.last_idle_reminder_at = dt_value
         self.db.commit()
         return True
+
+    def get_permission_codes(self, telegram_user_id: int) -> list[str]:
+        user = self.get_by_telegram_id(telegram_user_id)
+        if not user:
+            return []
+
+        rows = self.db.execute(
+            text("""
+                SELECT p.code
+                FROM user_permissions up
+                JOIN permissions p ON p.id = up.permission_id
+                WHERE up.user_id = :user_id
+                ORDER BY p.code
+            """),
+            {"user_id": user.id},
+        ).fetchall()
+
+        return [row[0] for row in rows]
+
+    def has_permission(self, telegram_user_id: int, permission_code: str) -> bool:
+        return permission_code in self.get_permission_codes(telegram_user_id)

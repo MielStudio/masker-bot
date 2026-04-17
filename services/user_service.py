@@ -19,6 +19,12 @@ class UserService:
     def update_last_idle_reminder(self, telegram_user_id: int, dt_value: datetime) -> bool:
         return self.user_repo.update_last_idle_reminder(telegram_user_id, dt_value)
 
+    def get_permission_codes(self, telegram_user_id: int) -> list[str]:
+        return self.user_repo.get_permission_codes(telegram_user_id)
+
+    def has_permission(self, telegram_user_id: int, permission_code: str) -> bool:
+        return self.user_repo.has_permission(telegram_user_id, permission_code)
+
     def user_to_legacy_dict(self, user: User) -> dict:
         role_names: list[str] = []
         roles_ext: list[dict] = []
@@ -42,6 +48,7 @@ class UserService:
             "last_idle_reminder": user.last_idle_reminder_at.isoformat() if user.last_idle_reminder_at else None,
             "roles": role_names,
             "roles_ext": roles_ext,
+            "permissions": self.get_permission_codes(user.telegram_user_id),
             "points": {"Общее": int(user.total_points or 0)},
             "percent_rate": {"Общее": 1.0},
             "reserved_tasks": [],

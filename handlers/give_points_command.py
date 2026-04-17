@@ -59,11 +59,11 @@ def _apply_points(
 
 def build_give_points_handler(
     *,
-    admin_id: int,
     get_points_service: Callable[[], PointsService],
+    has_access: Callable[[int], bool],
 ):
     async def entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not update.effective_user or update.effective_user.id != admin_id:
+        if not update.effective_user or not has_access(update.effective_user.id):
             if update.message:
                 await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
             return ConversationHandler.END

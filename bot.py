@@ -8,6 +8,7 @@ from telegram import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     BotCommand,
+    BotCommandScopeChat,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
 )
@@ -235,9 +236,6 @@ async def check_user_membership(update: Update, context: ContextTypes.DEFAULT_TY
         "⚠️ Извините, бот работает только с участниками команды.\nПо вопросам обращайтесь к @StanPaige.",
     )
     return False
-
-def is_admin(user_id: int | None) -> bool:
-    return bool(user_id and user_id == ADMIN_ID)
 
 async def render_task_page(update_or_query, context, project: str, user_id: int, page: int = 1):
     user_record = get_user_by_id(user_id)
@@ -556,6 +554,107 @@ async def ensure_weekly_meeting_exists(context: ContextTypes.DEFAULT_TYPE):
 
     with_event_service(_create)
 
+def get_user_permissions(user_id: int | None) -> set[str]:
+    if not user_id:
+        return set()
+
+    def _run(user_service: UserService):
+        return set(user_service.get_permission_codes(user_id))
+
+    return with_user_service(_run)
+
+def is_super_admin(user_id: int | None) -> bool:
+    return bool(user_id and user_id == ADMIN_ID)
+
+def has_permission(user_id: int | None, permission_code: str) -> bool:
+    if not user_id:
+        return False
+
+    if is_super_admin(user_id):
+        return True
+
+    permissions = get_user_permissions(user_id)
+    return "admin_full" in permissions or permission_code in permissions
+
+def is_admin(user_id: int | None) -> bool:
+    if not user_id:
+        return False
+
+    if is_super_admin(user_id):
+        return True
+
+    permissions = get_user_permissions(user_id)
+    admin_codes = {
+        "admin_full",
+        "manage_users",
+        "manage_projects",
+        "manage_tasks",
+        "review_tasks",
+        "manage_events",
+        "manage_points",
+        "view_admin_reports",
+    }
+    return any(code in permissions for code in admin_codes)
+
+def build_user_bot_commands(user_id: int) -> list[BotCommand]:
+    commands = [
+        BotCommand("start", "Моё приветствие"),
+        BotCommand("help", "Все доступные команды"),
+        BotCommand("upcoming_events", "Посмотреть грядущие события"),
+        BotCommand("my_points", "Увидеть свои баллы"),
+        BotCommand("leaderboard", "Общий рейтинг"),
+        BotCommand("my_task", "Посмотреть свои задачи"),
+        BotCommand("submit_task", "Отправить задачу на проверку"),
+        BotCommand("task_checklist", "Чеклист задачи"),
+        BotCommand("toggle_checkitem", "Отметить пункт чеклиста"),
+        BotCommand("get_task", "Взять новую задачу"),
+    ]
+
+    if has_permission(user_id, "manage_points"):
+        commands.extend([
+            BotCommand("give_points", "Добавить баллы"),
+            BotCommand("check_points", "Проверить баллы"),
+            BotCommand("points_history", "История начислений"),
+        ])
+
+    if has_permission(user_id, "manage_tasks"):
+        commands.extend([
+            BotCommand("add_task", "Создать задачу"),
+            BotCommand("assign_task", "Назначить задачу"),
+            BotCommand("unassign_task", "Снять с задачи"),
+            BotCommand("block_task", "Заблокировать задачу"),
+            BotCommand("unblock_task", "Разблокировать задачу"),
+            BotCommand("set_deadline", "Изменить дедлайн"),
+            BotCommand("add_checkitem", "Добавить пункт чеклиста"),
+            BotCommand("delete_checkitem", "Удалить пункт чеклиста"),
+            BotCommand("run_overdue", "Проверить просрочки"),
+            BotCommand("overdue_tasks", "Просроченные задачи"),
+        ])
+
+    if has_permission(user_id, "review_tasks"):
+        commands.extend([
+            BotCommand("task_done", "Подтвердить задачу"),
+            BotCommand("return_task", "Вернуть на доработку"),
+        ])
+
+    if has_permission(user_id, "manage_events"):
+        commands.extend([
+            BotCommand("set_next_meeting", "Перенести собрание"),
+            BotCommand("finish_meeting", "Завершить собрание"),
+        ])
+
+    if has_permission(user_id, "view_admin_reports"):
+        commands.extend([
+            BotCommand("logs", "Посмотреть логи"),
+            BotCommand("admin_help", "Админ-команды"),
+        ])
+
+    return commands
+
+async def apply_user_command_scope(bot, user_id: int):
+    commands = build_user_bot_commands(user_id)
+    await bot.set_my_commands(commands, scope=BotCommandScopeChat(chat_id=user_id))
+
 # =========================
 # USER COMMANDS
 # =========================
@@ -563,39 +662,95 @@ async def ensure_weekly_meeting_exists(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
+    if not update.effective_user:
+        return
 
-    main_kb = ReplyKeyboardMarkup(
-        [["🔧 Взять задачу"]],
-        resize_keyboard=True,
-    )
+    user_id = update.effective_user.id
+
+    await apply_user_command_scope(context.bot, user_id)
+    main_kb = build_main_menu(user_id)
+
     await safe_reply(
         update,
         context,
-        "Здравствуй. Бот запущен и готов к работе. Используй /help, чтобы увидеть доступные команды.",
+        "Здравствуй. Бот запущен и готов к работе. Используй /help, чтобы увидеть доступные тебе команды.",
         markup=main_kb,
     )
-
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
+    if not update.effective_user:
+        return
 
-    text = (
-        "📖 <b>Доступные команды:</b>\n\n"
-        "/start — запустить бота\n"
-        "/help — показать список команд\n"
-        "/upcoming_events — ближайшие события\n"
-        "/my_points — мои баллы\n"
-        "/leaderboard — общий рейтинг участников\n"
-        "/leaderboard_project &lt;ID&gt; — рейтинг по проекту\n"
-        "/my_task — мои текущие задачи\n"
-        "/submit_task — отправить свою задачу на проверку\n"
-        "/task_checklist — посмотреть чеклист задачи\n"
-        "/toggle_checkitem — отметить пункт чеклиста\n"
-        "/get_task — взять новую задачу"
-    )
-    await safe_reply(update, context, text, parse_mode="HTML")
+    user_id = update.effective_user.id
+    await apply_user_command_scope(context.bot, user_id)
 
+    lines = [
+        "📖 <b>Доступные тебе команды:</b>",
+        "",
+        "/start — запустить бота",
+        "/help — показать список команд",
+        "/upcoming_events — ближайшие события",
+        "/my_points — мои баллы",
+        "/leaderboard — общий рейтинг участников",
+        "/my_task — мои текущие задачи",
+        "/submit_task — отправить свою задачу на проверку",
+        "/task_checklist — посмотреть чеклист задачи",
+        "/toggle_checkitem — отметить пункт чеклиста",
+        "/get_task — взять новую задачу",
+    ]
+
+    if has_permission(user_id, "manage_points"):
+        lines.extend([
+            "",
+            "<b>Баллы:</b>",
+            "/give_points — добавить баллы",
+            "/check_points — проверить баллы участника",
+            "/points_history — история начислений",
+        ])
+
+    if has_permission(user_id, "manage_tasks"):
+        lines.extend([
+            "",
+            "<b>Задачи:</b>",
+            "/add_task — создать задачу",
+            "/assign_task — назначить задачу участнику",
+            "/unassign_task — снять участника с задачи",
+            "/block_task — заблокировать задачу",
+            "/unblock_task — разблокировать задачу",
+            "/set_deadline — изменить дедлайн",
+            "/run_overdue — проверить просроченные задачи",
+            "/overdue_tasks — показать просрочки",
+            "/add_checkitem — добавить чеклист",
+            "/delete_checkitem — удалить пункт чеклиста",
+        ])
+
+    if has_permission(user_id, "review_tasks"):
+        lines.extend([
+            "",
+            "<b>Проверка:</b>",
+            "/task_done — подтвердить задачу",
+            "/return_task — вернуть задачу в работу",
+        ])
+
+    if has_permission(user_id, "manage_events"):
+        lines.extend([
+            "",
+            "<b>События:</b>",
+            "/set_next_meeting — перенести собрание",
+            "/finish_meeting — завершить собрание и внести attendance",
+        ])
+
+    if has_permission(user_id, "view_admin_reports"):
+        lines.extend([
+            "",
+            "<b>Отчёты и логи:</b>",
+            "/logs — посмотреть логи",
+            "/admin_help — расширенная справка",
+        ])
+
+    await safe_reply(update, context, "\n".join(lines), parse_mode="HTML")
 
 async def upcoming_events(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -1180,7 +1335,7 @@ def get_task_handler():
 async def add_task_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return ConversationHandler.END
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
         return ConversationHandler.END
 
@@ -1620,35 +1775,64 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
         return
 
-    help_text = (
-        "🗝️ <b>Админ-команды:</b>\n\n"
-        "/give_points — добавить баллы участнику\n"
-        "/check_points — проверить баллы участника\n"
-        "/points_history [username] — история начислений баллов\n"
-        "/task_done — пометить задачу выполненной\n"
-        "/return_task — вернуть задачу на доработку\n"
-        "/block_task — заблокировать задачу\n"
-        "/unblock_task — разблокировать задачу\n"
-        "/unassign_task — снять участника с задачи\n"
-        "/assign_task — назначить задачу участнику\n"
-        "/add_task — создать новую задачу\n"
-        "/set_deadline — изменить дедлайн задачи\n"
-        "/run_overdue — проверить и отметить просроченные задачи\n"
-        "/overdue_tasks — показать все просроченные задачи\n"
-        "/set_next_meeting — изменить дату и время ближайшего собрания\n"
-        "/finish_meeting — завершить собрание и внести attendance\n"
-        "/add_checkitem — добавить пункт чеклиста\n"
-        "/delete_checkitem — удалить пункт чеклиста\n"
-        "/logs [audit|errors|tasks|points] — посмотреть логи\n"
-    )
-    await safe_reply(update, context, help_text, parse_mode="HTML")
+    lines = ["🗝️ <b>Доступные админ-команды:</b>", ""]
+
+    if has_permission(user.id, "manage_points"):
+        lines.extend([
+            "<b>Баллы:</b>",
+            "/give_points — добавить баллы участнику",
+            "/check_points — проверить баллы участника",
+            "/points_history [username] — история начислений",
+            "",
+        ])
+
+    if has_permission(user.id, "review_tasks"):
+        lines.extend([
+            "<b>Проверка задач:</b>",
+            "/task_done — пометить задачу выполненной",
+            "/return_task — вернуть задачу на доработку",
+            "",
+        ])
+
+    if has_permission(user.id, "manage_tasks"):
+        lines.extend([
+            "<b>Управление задачами:</b>",
+            "/unassign_task — снять участника с задачи",
+            "/assign_task — назначить задачу участнику",
+            "/add_task — создать новую задачу",
+            "/block_task — заблокировать задачу",
+            "/unblock_task — разблокировать задачу",
+            "/set_deadline — изменить дедлайн задачи",
+            "/run_overdue — проверить просрочки",
+            "/overdue_tasks — показать просроченные задачи",
+            "/add_checkitem — добавить пункт чеклиста",
+            "/delete_checkitem — удалить пункт чеклиста",
+            "",
+        ])
+
+    if has_permission(user.id, "manage_events"):
+        lines.extend([
+            "<b>События:</b>",
+            "/set_next_meeting — изменить дату ближайшего собрания",
+            "/finish_meeting — завершить собрание и внести attendance",
+            "",
+        ])
+
+    if has_permission(user.id, "view_admin_reports"):
+        lines.extend([
+            "<b>Логи и отчёты:</b>",
+            "/logs [audit|errors|tasks|points] — посмотреть логи",
+            "",
+        ])
+
+    await safe_reply(update, context, "\n".join(lines), parse_mode="HTML")
 
 async def check_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
     if not update.message or not update.effective_user:
         return
-    if not is_admin(update.effective_user.id):
+    if not has_permission(update.effective_user.id, "manage_points"):
         await update.message.reply_text("❌ Ты слишком слаб чтобы использовать это заклинание")
         return
 
@@ -1685,7 +1869,7 @@ async def task_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     if not update.effective_user:
         return ConversationHandler.END
-    if not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "review_tasks"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return ConversationHandler.END
 
@@ -1811,13 +1995,14 @@ async def task_done_apply_k(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     def _award_points(points_service: PointsService):
         awarded = []
-        # test comment
 
         for user_data, amount in zip(active_users_data, split_points):
             if amount <= 0:
                 continue
 
             ok = points_service.add_points(
+                telegram_user_id=user_data["telegram_user_id"],
+                points_to_add=amount,
                 project_id=project_id,
                 project_name=project_title,
                 reason=f"Подтверждена задача #{task_id}: {task_title}",
@@ -1957,7 +2142,7 @@ async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not update.effective_user:
         return
-    if not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "review_tasks"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return
 
@@ -2037,7 +2222,7 @@ async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def block_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return
 
@@ -2134,7 +2319,7 @@ async def block_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return
 
@@ -2227,7 +2412,7 @@ async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
         return
 
@@ -2348,7 +2533,7 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return
 
@@ -2476,7 +2661,7 @@ async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def run_overdue_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return
 
@@ -2523,7 +2708,7 @@ async def show_overdue(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
         return
 
@@ -2639,7 +2824,7 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def add_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return
 
@@ -2691,7 +2876,7 @@ async def add_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def delete_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return
 
@@ -2743,7 +2928,7 @@ async def delete_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(update, context, f"🗑 Удалён пункт чеклиста: {item_title}")
 
 async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_points"):
         await safe_reply(update, context, "❌ У тебя нет доступа к истории баллов.")
         return
 
@@ -2825,7 +3010,7 @@ async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def set_next_meeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_events"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return
 
@@ -2888,7 +3073,7 @@ async def set_next_meeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def finish_meeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return ConversationHandler.END
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_events"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
         return ConversationHandler.END
 
@@ -3082,7 +3267,7 @@ def get_finish_meeting_handler():
     )
 
 async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or not is_admin(update.effective_user.id):
+    if not update.effective_user or not has_permission(update.effective_user.id, "view_admin_reports"):
         await safe_reply(update, context, "❌ У тебя нет доступа к логам.")
         return
 
@@ -3152,6 +3337,91 @@ async def logs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # APP INIT
 # =========================
 
+def build_main_menu(user_id: int) -> ReplyKeyboardMarkup:
+    rows = [
+        ["🔧 Взять задачу", "📝 Мои задачи"],
+        ["📅 События", "🏆 Мои баллы"],
+        ["📊 Лидерборд", "❓ Помощь"],
+    ]
+
+    if has_permission(user_id, "manage_tasks") or has_permission(user_id, "review_tasks"):
+        rows.append(["🛠 Админ задачи"])
+
+    if has_permission(user_id, "manage_events"):
+        rows.append(["📢 Управление событиями"])
+
+    if has_permission(user_id, "manage_points"):
+        rows.append(["💰 Управление баллами"])
+
+    if has_permission(user_id, "view_admin_reports"):
+        rows.append(["📜 Логи"])
+
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True)
+
+async def admin_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
+        await safe_reply(update, context, "❌ Нет доступа.")
+        return
+
+    await safe_reply(
+        update,
+        context,
+        "🛠 Раздел задач администратора:\n"
+        "/add_task\n"
+        "/assign_task\n"
+        "/unassign_task\n"
+        "/block_task\n"
+        "/unblock_task\n"
+        "/set_deadline\n"
+        "/run_overdue\n"
+        "/overdue_tasks"
+    )
+
+async def admin_events_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_events"):
+        await safe_reply(update, context, "❌ Нет доступа.")
+        return
+
+    await safe_reply(
+        update,
+        context,
+        "📢 Раздел событий:\n"
+        "/set_next_meeting\n"
+        "/finish_meeting\n"
+        "/upcoming_events"
+    )
+
+async def admin_points_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_points"):
+        await safe_reply(update, context, "❌ Нет доступа.")
+        return
+
+    await safe_reply(
+        update,
+        context,
+        "💰 Раздел баллов:\n"
+        "/give_points\n"
+        "/check_points <username>\n"
+        "/points_history [username]\n"
+        "/leaderboard\n"
+        "/leaderboard_project <ID>"
+    )
+
+async def admin_logs_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not has_permission(update.effective_user.id, "view_admin_reports"):
+        await safe_reply(update, context, "❌ Нет доступа.")
+        return
+
+    await safe_reply(
+        update,
+        context,
+        "📜 Раздел логов:\n"
+        "/logs audit\n"
+        "/logs errors\n"
+        "/logs tasks\n"
+        "/logs points"
+    )
+
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start", "Моё приветствие"),
@@ -3208,6 +3478,16 @@ def main():
 
     app = ApplicationBuilder().token(bot_token).post_init(post_init).build()
 
+    app.add_handler(MessageHandler(filters.Regex(r"^📝 Мои задачи$"), my_task))
+    app.add_handler(MessageHandler(filters.Regex(r"^📅 События$"), upcoming_events))
+    app.add_handler(MessageHandler(filters.Regex(r"^🏆 Мои баллы$"), my_points))
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 Лидерборд$"), leaderboard))
+    app.add_handler(MessageHandler(filters.Regex(r"^❓ Помощь$"), help_command))
+    app.add_handler(MessageHandler(filters.Regex(r"^🛠 Админ задачи$"), admin_tasks_menu))
+    app.add_handler(MessageHandler(filters.Regex(r"^📢 Управление событиями$"), admin_events_menu))
+    app.add_handler(MessageHandler(filters.Regex(r"^💰 Управление баллами$"), admin_points_menu))
+    app.add_handler(MessageHandler(filters.Regex(r"^📜 Логи$"), admin_logs_menu))
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("admin_help", admin_help))
@@ -3215,8 +3495,8 @@ def main():
     app.add_handler(CommandHandler("upcoming_events", upcoming_events))
 
     app.add_handler(build_give_points_handler(
-        admin_id=ADMIN_ID,
         get_points_service=create_points_service,
+        has_access=lambda user_id: has_permission(user_id, "manage_points"),
     ))
 
     app.add_handler(CommandHandler("my_points", my_points))
