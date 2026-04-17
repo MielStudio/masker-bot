@@ -384,6 +384,8 @@ async def send_event_notification(event: dict, context: ContextTypes.DEFAULT_TYP
             prefix = "📢 Напоминание о собрании за 24 часа"
         elif wave == "2":
             prefix = "📢 Напоминание о собрании за 2 часа"
+        elif wave == "start":
+            prefix = "📢 Собрание начинается"
         else:
             prefix = "📢 Напоминание о собрании"
     else:
@@ -461,6 +463,9 @@ async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
                 with_event_service(_mark2)
 
             if now >= dt:
+                if event.get("type") == "meeting":
+                    await send_event_notification(event, context, "start")
+
                 if event.get("task_id"):
                     await run_overdue_check(context)
 
