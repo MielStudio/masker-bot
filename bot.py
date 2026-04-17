@@ -1085,7 +1085,19 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, "📭 Нет данных для лидерборда.")
         return
 
-    lines = ["🏆 <b>Общий лидерборд:</b>", ""]
+    lines = ["🏆 <b>Лидерборд</b>", ""]
+
+    medals = ["🥇", "🥈", "🥉"]
+
+    for i, user in enumerate(data[:10], start=1):
+        name = f"@{user['username']}" if user["username"] else user["full_name"]
+        points = user["points"]
+
+        if i <= 3:
+            prefix = medals[i - 1]
+            lines.append(f"{prefix} {name} — <b>{points}</b> баллов")
+        else:
+            lines.append(f"{i}️⃣ {name} — {points} баллов")
 
     for i, user in enumerate(data[:10], start=1):
         name = f"@{user['username']}" if user["username"] else user["full_name"]
@@ -1123,6 +1135,64 @@ async def leaderboard_project(update: Update, context: ContextTypes.DEFAULT_TYPE
         lines.append(f"{i}. {name} — {user['points']} баллов")
 
     await safe_reply(update, context, "\n".join(lines), parse_mode="HTML")
+
+async def leaderboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+
+    def _run(task_service: TaskService):
+        return task_service.list_projects()
+
+    projects = with_task_service(_run)
+
+    buttons = []
+    for p in projects:
+        buttons.append([
+            InlineKeyboardButton(
+                text=p.title,
+                callback_data=f"lb_proj:{p.id}"
+            )
+        ])
+
+    markup = InlineKeyboardMarkup(buttons)
+
+    await safe_reply(
+        update,
+        context,
+        "📊 <b>Выбери проект:</b>",
+        markup=markup,
+        parse_mode="HTML"
+    )
+
+async def leaderboard_project_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
+    project_id = int(data.split(":")[1])
+
+    def _run(points_service: PointsService):
+        return points_service.get_leaderboard(project_id=project_id)
+
+    leaderboard = with_points_service(_run)
+
+    if not leaderboard:
+        await query.edit_message_text("📭 Нет данных по проекту.")
+        return
+
+    medals = ["🥇", "🥈", "🥉"]
+    lines = ["🏆 <b>Лидерборд проекта</b>", ""]
+
+    for i, user in enumerate(leaderboard[:10], start=1):
+        name = f"@{user['username']}" if user["username"] else user["full_name"]
+        points = user["points"]
+
+        if i <= 3:
+            lines.append(f"{medals[i-1]} {name} — <b>{points}</b> баллов")
+        else:
+            lines.append(f"{i}️⃣ {name} — {points} баллов")
+
+    await query.edit_message_text("\n".join(lines), parse_mode="HTML")
 
 # =========================
 # GET TASK FLOW
@@ -3502,7 +3572,8 @@ def main():
     app.add_handler(CommandHandler("my_points", my_points))
     app.add_handler(CommandHandler("check_points", check_points))
     app.add_handler(CommandHandler("points_history", points_history))
-    app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("leaderboard", leaderboard_menu))
+    app.add_handler(CallbackQueryHandler(leaderboard_project_callback, pattern="^lb_proj:"))
     app.add_handler(CommandHandler("leaderboard_project", leaderboard_project))
     app.add_handler(CommandHandler("my_task", my_task))
     app.add_handler(CommandHandler("submit_task", submit_task))

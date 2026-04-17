@@ -28,13 +28,32 @@ def _all_usernames(get_points_service: Callable[[], PointsService]) -> List[str]
     return sorted(out, key=str.lower)
 
 
-def _all_projects(get_points_service: Callable[[], PointsService]) -> List[str]:
-        return ["Общее"]
+def _all_projects(get_points_service: Callable[[], PointsService]) -> List[dict]:
+    points_service = get_points_service()
+    db = points_service.user_repo.db
+
+    from database.models import Project
+
+    projects = (
+        db.query(Project)
+        .filter(Project.is_active.is_(True))
+        .order_by(Project.title.asc())
+        .all()
+    )
+
+    return [
+        {
+            "id": p.id,
+            "title": p.title,
+        }
+        for p in projects
+    ]
 
 def _apply_points(
     get_points_service: Callable[[], PointsService],
     username: str,
-    project: str,
+    project_id: int,
+    project_title: str,
     delta: int,
 ) -> None:
     points_service = get_points_service()
@@ -47,8 +66,8 @@ def _apply_points(
     ok = points_service.add_points(
         telegram_user_id=telegram_user_id,
         points_to_add=int(delta),
-        project_id=1,
-        project_name=project,
+        project_id=project_id,
+        project_name=project_title,
         reason="Ручное начисление админом",
         source_type="manual",
     )
@@ -100,11 +119,15 @@ def build_give_points_handler(
         context.user_data["gp_username"] = update.message.text.lstrip("@").strip()
 
         projects = _all_projects(get_points_service)
-        rows = [[p] for p in projects[:20]]
-        rows.append(["✏️ Ввести проект вручную"])
+
+        context.user_data["gp_projects_map"] = {
+            p["title"]: p["id"] for p in projects
+        }
+
+        rows = [[p["title"]] for p in projects[:20]]
 
         await update.message.reply_text(
-            "Выбери проект (или нажми «✏️ Ввести проект вручную»):",
+            "Выбери проект:",
             reply_markup=ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True),
         )
         return GP_PROJECT
@@ -113,12 +136,16 @@ def build_give_points_handler(
         if not update.message or not update.message.text:
             return ConversationHandler.END
 
-        text = update.message.text.strip()
-        if text == "✏️ Ввести проект вручную":
-            await update.message.reply_text("Введи точное имя проекта:", reply_markup=ReplyKeyboardRemove())
+        title = update.message.text.strip()
+        projects_map = context.user_data.get("gp_projects_map", {})
+
+        if title not in projects_map:
+            await update.message.reply_text("⚠️ Выбери проект кнопкой из списка.")
             return GP_PROJECT
 
-        context.user_data["gp_project"] = text
+        context.user_data["gp_project_title"] = title
+        context.user_data["gp_project_id"] = projects_map[title]
+
         await update.message.reply_text(
             "Сколько баллов добавить? Примеры: 20, +15, -5",
             reply_markup=ReplyKeyboardRemove(),
@@ -137,7 +164,7 @@ def build_give_points_handler(
             return GP_POINTS
 
         u = context.user_data["gp_username"]
-        p = context.user_data["gp_project"]
+        p = context.user_data["gp_project_title"]
         d = context.user_data["gp_delta"]
 
         text = (
@@ -160,7 +187,8 @@ def build_give_points_handler(
                 _apply_points(
                     get_points_service,
                     context.user_data["gp_username"],
-                    context.user_data["gp_project"],
+                    context.user_data["gp_project_id"],
+                    context.user_data["gp_project_title"],
                     context.user_data["gp_delta"],
                 )
                 await update.message.reply_text("✅ Готово!", reply_markup=ReplyKeyboardRemove())
@@ -169,7 +197,7 @@ def build_give_points_handler(
         else:
             await update.message.reply_text("❌ Отменено.", reply_markup=ReplyKeyboardRemove())
 
-        for k in ("gp_username", "gp_project", "gp_delta"):
+        for k in ("gp_username", "gp_project_id", "gp_project_title", "gp_projects_map", "gp_delta"):
             context.user_data.pop(k, None)
 
         return ConversationHandler.END
