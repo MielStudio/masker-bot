@@ -119,3 +119,103 @@ class EventRepository:
 
         self.db.commit()
         return count
+    
+    def list_for_notifications(self, now: datetime) -> list[Event]:
+        return (
+            self.db.query(Event)
+            .options(
+                joinedload(Event.participants).joinedload(EventParticipant.user)
+            )
+            .filter(Event.notify_users.is_(True))
+            .filter(Event.is_archived.is_(False))
+            .filter(Event.datetime_at >= now)
+            .all()
+        )
+
+    def mark_notified_24h(self, event_id: int) -> bool:
+        event = self.get_by_id(event_id)
+        if not event:
+            return False
+        event.notified_24h = True
+        self.db.commit()
+        return True
+
+    def mark_notified_2h(self, event_id: int) -> bool:
+        event = self.get_by_id(event_id)
+        if not event:
+            return False
+        event.notified_2h = True
+        self.db.commit()
+        return True
+
+    def archive_event(self, event_id: int) -> bool:
+        event = self.get_by_id(event_id)
+        if not event:
+            return False
+        event.is_archived = True
+        self.db.commit()
+        return True
+
+    def upsert_deadline_event(
+        self,
+        task_id: int,
+        telegram_user_ids: list[int],
+        title: str,
+        description: str,
+        dt_value: datetime,
+    ) -> Event | None:
+        task = self.db.query(Task).filter(Task.id == task_id).first()
+        if not task:
+            return None
+
+        event = (
+            self.db.query(Event)
+            .options(joinedload(Event.participants))
+            .filter(Event.related_task_id == task_id)
+            .filter(Event.is_archived.is_(False))
+            .first()
+        )
+
+        if not event:
+            event = Event(
+                title=title,
+                description=description,
+                datetime_at=dt_value,
+                related_task_id=task.id,
+                notify_users=True,
+                scope="personal",
+                is_archived=False,
+                notified_24h=False,
+                notified_2h=False,
+            )
+            self.db.add(event)
+            self.db.flush()
+        else:
+            event.title = title
+            event.description = description
+            event.datetime_at = dt_value
+            event.notify_users = True
+            event.notified_24h = False
+            event.notified_2h = False
+
+            for p in list(event.participants):
+                self.db.delete(p)
+            self.db.flush()
+
+        users = (
+            self.db.query(User)
+            .filter(User.telegram_user_id.in_(telegram_user_ids))
+            .all()
+        )
+
+        for user in users:
+            self.db.add(
+                EventParticipant(
+                    event_id=event.id,
+                    user_id=user.id,
+                )
+            )
+
+        self.db.commit()
+        self.db.refresh(event)
+        return event

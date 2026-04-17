@@ -42,6 +42,10 @@ from config import (
     K_BONUS_MIN, K_BONUS_MAX,
     PRIORITY_LABELS,
     PRIORITY_MULTIPLIERS,
+    REMINDER_24H_MIN_HOURS,
+    REMINDER_24H_MAX_HOURS,
+    REMINDER_2H_MIN_HOURS,
+    REMINDER_2H_MAX_HOURS,
 )
 import traceback
 
@@ -383,6 +387,84 @@ def get_priority_multiplier(priority: str | None) -> float:
     if not priority:
         return 1.0
     return PRIORITY_MULTIPLIERS.get(priority, 1.0)
+
+async def send_event_notification(event: dict, context: ContextTypes.DEFAULT_TYPE, wave: str):
+    dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
+    when_str = format_datetime_rus(dt)
+
+    if wave == "24":
+        prefix = "⏰ Напоминание за 24 часа"
+    elif wave == "2":
+        prefix = "⏰ Напоминание за 2 часа"
+    else:
+        prefix = "⏰ Напоминание"
+
+    task_line = f"\n🆔 Задача: #{event['task_id']}" if event.get("task_id") else ""
+    desc = event.get("description") or "Без описания"
+
+    text = (
+        f"{prefix}\n\n"
+        f"📌 <b>{html.escape(event['title'])}</b>{task_line}\n"
+        f"🕒 {when_str}\n"
+        f"📝 {html.escape(desc)}"
+    )
+
+    for tg_user_id in event.get("users", []):
+        try:
+            await context.bot.send_message(
+                chat_id=tg_user_id,
+                text=text,
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+async def event_auto_notify(context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(WORK_TZ)
+
+    def _events(event_service: EventService):
+        return event_service.get_events_for_notifications(now)
+
+    events = with_event_service(_events)
+
+    for event in events:
+        try:
+            dt = datetime.fromisoformat(event["datetime"]).replace(tzinfo=WORK_TZ)
+            delta_hours = (dt - now).total_seconds() / 3600
+
+            if (
+                REMINDER_24H_MIN_HOURS <= delta_hours <= REMINDER_24H_MAX_HOURS
+                and not event.get("notified_24h")
+            ):
+                await send_event_notification(event, context, "24")
+
+                def _mark24(event_service: EventService):
+                    return event_service.mark_notified_24h(event["id"])
+
+                with_event_service(_mark24)
+
+            if (
+                REMINDER_2H_MIN_HOURS <= delta_hours <= REMINDER_2H_MAX_HOURS
+                and not event.get("notified_2h")
+            ):
+                await send_event_notification(event, context, "2")
+
+                def _mark2(event_service: EventService):
+                    return event_service.mark_notified_2h(event["id"])
+
+                with_event_service(_mark2)
+
+            if now >= dt:
+                if event.get("task_id"):
+                    await run_overdue_check(context)
+
+                def _archive(event_service: EventService):
+                    return event_service.archive_event(event["id"])
+
+                with_event_service(_archive)
+
+        except Exception:
+            pass
 
 # =========================
 # USER COMMANDS
@@ -938,13 +1020,21 @@ async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
 
     def _ensure_event(event_repo: EventRepository):
-        existing = event_repo.get_by_task_id(task_id)
-        if existing:
-            return existing
+        active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+        tg_user_ids = []
 
-        return event_repo.create_deadline_event(
+        for link in active_links:
+            user = getattr(link, "user", None)
+            if user:
+                tg_user_ids.append(user.telegram_user_id)
+
+        if not tg_user_ids or not task.deadline_at:
+            event_repo.remove_by_task_id(task.id)
+            return None
+
+        return event_repo.upsert_deadline_event(
             task_id=task.id,
-            telegram_user_id=user_id,
+            telegram_user_ids=tg_user_ids,
             title=f"Дедлайн по задаче #{task.id}",
             description="Пожалуйста, заверши работу в срок.",
             dt_value=task.deadline_at,
@@ -2219,28 +2309,28 @@ async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, f"❌ Не удалось изменить дедлайн задачи #{task_id}.")
         return
 
-    def _remove_events(event_repo: EventRepository):
-        return event_repo.remove_by_task_id(task_id)
+    def _sync_event(event_repo: EventRepository):
+        active_links = [a for a in getattr(updated, "assignees", []) if getattr(a, "is_active", False)]
+        tg_user_ids = []
 
-    def _ensure_event(event_repo: EventRepository):
-        return event_repo.create_deadline_event(
+        for link in active_links:
+            user = getattr(link, "user", None)
+            if user:
+                tg_user_ids.append(user.telegram_user_id)
+
+        if not tg_user_ids:
+            event_repo.remove_by_task_id(task_id)
+            return None
+
+        return event_repo.upsert_deadline_event(
             task_id=task_id,
-            telegram_user_id=active_user_tg_id,
+            telegram_user_ids=tg_user_ids,
             title=f"Дедлайн по задаче #{task_id}",
             description="Администратор обновил дедлайн задачи.",
             dt_value=deadline_at,
         )
 
-    active_links = [a for a in getattr(updated, "assignees", []) if getattr(a, "is_active", False)]
-    active_user_tg_id = None
-    if active_links:
-        user = getattr(active_links[0], "user", None)
-        if user:
-            active_user_tg_id = user.telegram_user_id
-
-    if active_user_tg_id:
-        with_event_repo(_remove_events)
-        with_event_repo(_ensure_event)
+    synced_event = with_event_repo(_sync_event)
 
     def _log(log_service: LogService):
         log_service.log_audit(
@@ -2272,10 +2362,15 @@ async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⏰ Дедлайн задачи #{task_id} изменён на {format_datetime_rus(deadline_at)}."
     )
 
-    if active_user_tg_id:
+    active_links = [a for a in getattr(updated, "assignees", []) if getattr(a, "is_active", False)]
+    for link in active_links:
+        user = getattr(link, "user", None)
+        if not user:
+            continue
+
         try:
             await context.bot.send_message(
-                chat_id=active_user_tg_id,
+                chat_id=user.telegram_user_id,
                 text=(
                     f"⏰ <b>Дедлайн обновлён</b>\n\n"
                     f"🆔 #{task_id}\n"
@@ -2361,13 +2456,21 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
         def _ensure_event(event_repo: EventRepository):
-            existing = event_repo.get_by_task_id(task_id)
-            if existing:
-                return existing
+            active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+            tg_user_ids = []
 
-            return event_repo.create_deadline_event(
+            for link in active_links:
+                user = getattr(link, "user", None)
+                if user:
+                    tg_user_ids.append(user.telegram_user_id)
+
+            if not tg_user_ids or not task.deadline_at:
+                event_repo.remove_by_task_id(task.id)
+                return None
+
+            return event_repo.upsert_deadline_event(
                 task_id=task.id,
-                telegram_user_id=target_user.telegram_user_id,
+                telegram_user_ids=tg_user_ids,
                 title=f"Дедлайн по задаче #{task.id}",
                 description="Пожалуйста, заверши работу в срок.",
                 dt_value=task.deadline_at,
@@ -2686,6 +2789,14 @@ async def post_init(app: Application) -> None:
         BotCommand("submit_task", "Отправить задачу на проверку"),
         BotCommand("get_task", "Взять новую задачу"),
     ])
+
+    if app.job_queue:
+        app.job_queue.run_repeating(
+            event_auto_notify,
+            interval=60,
+            first=10,
+            name="event_auto_notify",
+        )
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print("=== ERROR HANDLER ===")
