@@ -50,10 +50,6 @@ class TaskService:
             })
         
         points = self.calculate_task_points(task)
-        for attr in ("j_value", "c_value", "t_value"):
-            value = getattr(task, attr, None)
-            if value:
-                points += value
 
         return {
             "id": task.id,
