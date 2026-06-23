@@ -417,14 +417,17 @@ class TaskRepository:
 
         link.is_active = False
 
-        active_links = (
+        # Flush so the change is visible to the next query within this session
+        self.db.flush()
+
+        remaining_active_links = (
             self.db.query(TaskAssignee)
             .filter(TaskAssignee.task_id == task_id)
             .filter(TaskAssignee.is_active.is_(True))
             .all()
         )
 
-        if not active_links:
+        if not remaining_active_links:
             task.status = "available"
             task.deadline_at = None
 
