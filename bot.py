@@ -2282,13 +2282,13 @@ async def check_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ Формат: /check_points <username>")
+        await update.message.reply_text("⚠️ Формат: /check_points <Полное имя>")
         return
 
-    username = context.args[0].lstrip("@")
+    full_name = " ".join(context.args).strip()
 
     def _run(points_service: PointsService):
-        return points_service.get_user_points_summary_by_username(username)
+        return points_service.get_user_points_summary_by_full_name(full_name)
 
     summary = with_points_service(_run)
     if not summary:
@@ -2297,10 +2297,10 @@ async def check_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     projects = summary.get("projects", {})
     if not projects:
-        await update.message.reply_text(f"📊 У @{username} пока нет баллов.")
+        await update.message.reply_text(f"📊 У {html.escape(full_name)} пока нет баллов.")
         return
 
-    lines = [f"📊 <b>Баллы @{username}:</b>", ""]
+    lines = [f"📊 <b>Баллы {html.escape(full_name)}:</b>", ""]
     for project_name in sorted(projects.keys()):
         item = projects[project_name]
         points = item.get("points", 0)
@@ -2865,7 +2865,7 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(
             update,
             context,
-            "⚠️ Используй: /unassign_task <ID задачи> <username>\n\nПример:\n/unassign_task 12 StanPaige"
+            "⚠️ Используй: /unassign_task <ID задачи> <Полное имя>\n\nПример:\n/unassign_task 12 Станислав Палий"
         )
         return
 
@@ -2874,14 +2874,14 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     task_id = int(context.args[0])
-    username = context.args[1].lstrip("@").strip().lower()
+    full_name = " ".join(context.args[1:]).strip()
 
     def _target(user_service: UserService):
-        return user_service.user_repo.get_by_username(username)
+        return user_service.user_repo.get_by_full_name(full_name)
 
     target_user = with_user_service(_target)
     if not target_user:
-        await safe_reply(update, context, f"❌ Пользователь @{username} не найден.")
+        await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
         return
 
     def _get(task_service: TaskService):
@@ -2903,7 +2903,7 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(
             update,
             context,
-            f"⚠️ Пользователь @{username} не является активным исполнителем задачи #{task_id}."
+            f"⚠️ Пользователь «{html.escape(full_name)}» не является активным исполнителем задачи #{task_id}."
         )
         return
 
@@ -2914,7 +2914,7 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     updated_task = with_task_service(_unassign)
     if not updated_task:
-        await safe_reply(update, context, f"❌ Не удалось снять пользователя @{username} с задачи #{task_id}.")
+        await safe_reply(update, context, f"❌ Не удалось снять пользователя «{html.escape(full_name)}» с задачи #{task_id}.")
         return
 
     actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
@@ -2930,7 +2930,7 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "title": task_title,
                 "removed_from_user_id": removed_user_db_id,
                 "removed_from_telegram_user_id": target_user.telegram_user_id,
-                "removed_from_username": target_user.username,
+                "removed_from_full_name": target_user.full_name,
             }
         )
 
@@ -2940,7 +2940,7 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             action_type="unassigned",
             old_value=str(removed_user_db_id) if removed_user_db_id is not None else None,
             new_value=None,
-            note=f"Админ снял пользователя @{username} с задачи"
+            note=f"Админ снял пользователя «{full_name}» с задачи"
         )
 
     with_log_service(_log)
@@ -2955,14 +2955,14 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(
             update,
             context,
-            f"✅ Пользователь @{username} снят с задачи #{task_id}. "
+            f"✅ Пользователь «{html.escape(full_name)}» снят с задачи #{task_id}. "
             f"Задача снова свободна. Удалено связанных событий: {removed}."
         )
     else:
         await safe_reply(
             update,
             context,
-            f"✅ Пользователь @{username} снят с задачи #{task_id}. "
+            f"✅ Пользователь «{html.escape(full_name)}» снят с задачи #{task_id}. "
             f"У задачи всё ещё есть активные исполнители."
         )
 
@@ -3161,21 +3161,21 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
         await safe_reply(
             update,
             context,
-            "⚠️ Используй так:\n<code>/assign_task &lt;ID задачи&gt; &lt;username&gt;</code>\n\nПример:\n<code>/assign_task 2 Franky126866</code>",
+            "⚠️ Используй так:\n<code>/assign_task &lt;ID задачи&gt; &lt;Полное имя&gt;</code>\n\nПример:\n<code>/assign_task 2 Игорь Франкенштейн</code>",
             parse_mode="HTML",
         )
         return
 
     try:
         task_id = int(context.args[0])
-        username = context.args[1].lstrip("@").strip().lower()
+        full_name = " ".join(context.args[1:]).strip()
 
         def _target(user_service: UserService):
-            return user_service.user_repo.get_by_username(username)
+            return user_service.user_repo.get_by_full_name(full_name)
 
         target_user = with_user_service(_target)
         if not target_user:
-            await safe_reply(update, context, f"❌ Пользователь @{username} не найден.")
+            await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
             return
 
         def _get_task(task_service: TaskService):
@@ -3247,7 +3247,7 @@ async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE
         with_log_service(_log)
 
         with_event_repo(_ensure_event)
-        await safe_reply(update, context, f"✅ Задача #{task_id} назначена пользователю @{username}.")
+        await safe_reply(update, context, f"✅ Задача #{task_id} назначена пользователю «{html.escape(full_name)}».")
 
         try:
             await context.bot.send_message(
@@ -3377,18 +3377,18 @@ async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, "❌ У тебя нет доступа к истории баллов.")
         return
 
-    username = None
+    full_name = None
     target_user = None
 
     if context.args:
-        username = context.args[0].lstrip("@").strip().lower()
+        full_name = " ".join(context.args).strip()
 
         def _find_user(user_service: UserService):
-            return user_service.user_repo.get_by_username(username)
+            return user_service.user_repo.get_by_full_name(full_name)
 
         target_user = with_user_service(_find_user)
         if not target_user:
-            await safe_reply(update, context, f"❌ Пользователь @{username} не найден.")
+            await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
             return
 
         target_user_id = target_user.id
@@ -3403,16 +3403,16 @@ async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     items = with_log_service(_run)
     if not items:
-        if username:
-            await safe_reply(update, context, f"📭 История баллов для @{username} пуста.")
+        if full_name:
+            await safe_reply(update, context, f"📭 История баллов для {html.escape(full_name)} пуста.")
         else:
             await safe_reply(update, context, "📭 История баллов пуста.")
         return
 
     lines = []
 
-    if username:
-        lines.append(f"🏆 <b>История баллов @{html.escape(username)}</b>")
+    if full_name:
+        lines.append(f"🏆 <b>История баллов {html.escape(full_name)}</b>")
     else:
         lines.append("🏆 <b>Общая история баллов</b>")
 

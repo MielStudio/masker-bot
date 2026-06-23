@@ -89,6 +89,18 @@ class PointsService:
             "projects": self._build_project_summary(user),
         }
 
+    def get_user_points_summary_by_full_name(self, full_name: str) -> dict | None:
+        user = self.user_repo.get_by_full_name(full_name)
+        if not user:
+            return None
+
+        return {
+            "user_id": user.telegram_user_id,
+            "username": user.username,
+            "full_name": user.full_name,
+            "projects": self._build_project_summary(user),
+        }
+
     def add_points(
         self,
         telegram_user_id: int,

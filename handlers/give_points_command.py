@@ -15,13 +15,13 @@ from services.points_service import PointsService
 GP_USER, GP_PROJECT, GP_POINTS, GP_CONFIRM = range(200, 204)
 
 
-def _all_usernames(get_points_service: Callable[[], PointsService]) -> List[str]:
+def _all_full_names(get_points_service: Callable[[], PointsService]) -> List[str]:
     points_service = get_points_service()
     users = points_service.user_repo.list_all()
 
     out = []
     for u in users:
-        name = (u.username or "").strip()
+        name = (u.full_name or "").strip()
         if name:
             out.append(name)
 
@@ -51,15 +51,15 @@ def _all_projects(get_points_service: Callable[[], PointsService]) -> List[dict]
 
 def _apply_points(
     get_points_service: Callable[[], PointsService],
-    username: str,
+    full_name: str,
     project_id: int,
     project_title: str,
     delta: int,
 ) -> None:
     points_service = get_points_service()
-    summary = points_service.get_user_points_summary_by_username(username)
+    summary = points_service.get_user_points_summary_by_full_name(full_name)
     if not summary:
-        raise ValueError(f"Пользователь @{username} не найден")
+        raise ValueError(f"Пользователь «{full_name}» не найден")
 
     telegram_user_id = summary["user_id"]
 
@@ -73,7 +73,7 @@ def _apply_points(
     )
 
     if not ok:
-        raise ValueError(f"Не удалось начислить баллы пользователю @{username}")
+        raise ValueError(f"Не удалось начислить баллы пользователю «{full_name}»")
 
 
 def build_give_points_handler(
@@ -93,30 +93,30 @@ def build_give_points_handler(
                 if len(args) < 3:
                     raise ValueError("Мало аргументов")
 
-                username = args[0].lstrip("@")
+                full_name = args[0]
                 project = args[1]
                 delta = int(args[2])
 
-                _apply_points(get_points_service, username, project, delta)
+                _apply_points(get_points_service, full_name, project, delta)
 
                 await update.message.reply_text(
-                    f"✅ Добавлено {delta} балл(ов) пользователю @{username} по «{project}»."
+                    f"✅ Добавлено {delta} балл(ов) пользователю «{full_name}» по «{project}»."
                 )
                 return ConversationHandler.END
 
             except Exception as e:
                 await update.message.reply_text(f"⚠️ {e}\nЗапускаю мастер добавления баллов…")
 
-        usernames = _all_usernames(get_points_service)
-        kb = ReplyKeyboardMarkup([[f"@{u}"] for u in usernames], resize_keyboard=True, one_time_keyboard=True)
-        await update.message.reply_text("Кому начислим баллы? Выбери @username:", reply_markup=kb)
+        full_names = _all_full_names(get_points_service)
+        kb = ReplyKeyboardMarkup([[name] for name in full_names], resize_keyboard=True, one_time_keyboard=True)
+        await update.message.reply_text("Кому начислим баллы? Выбери участника:", reply_markup=kb)
         return GP_USER
 
     async def step_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message or not update.message.text:
             return ConversationHandler.END
 
-        context.user_data["gp_username"] = update.message.text.lstrip("@").strip()
+        context.user_data["gp_full_name"] = update.message.text.strip()
 
         projects = _all_projects(get_points_service)
 
@@ -163,13 +163,13 @@ def build_give_points_handler(
             await update.message.reply_text("Число не распознано. Введи целое число, например 15 или -5.")
             return GP_POINTS
 
-        u = context.user_data["gp_username"]
+        u = context.user_data["gp_full_name"]
         p = context.user_data["gp_project_title"]
         d = context.user_data["gp_delta"]
 
         text = (
             f"Подтверди начисление:\n\n"
-            f"🧑 @{u}\n"
+            f"🧑 {html.escape(u)}\n"
             f"📂 Проект: {html.escape(p)}\n"
             f"🏆 Баллы: {d}\n\n"
             f"Отправить?"
@@ -186,7 +186,7 @@ def build_give_points_handler(
             try:
                 _apply_points(
                     get_points_service,
-                    context.user_data["gp_username"],
+                    context.user_data["gp_full_name"],
                     context.user_data["gp_project_id"],
                     context.user_data["gp_project_title"],
                     context.user_data["gp_delta"],
@@ -197,7 +197,7 @@ def build_give_points_handler(
         else:
             await update.message.reply_text("❌ Отменено.", reply_markup=ReplyKeyboardRemove())
 
-        for k in ("gp_username", "gp_project_id", "gp_project_title", "gp_projects_map", "gp_delta"):
+        for k in ("gp_full_name", "gp_project_id", "gp_project_title", "gp_projects_map", "gp_delta"):
             context.user_data.pop(k, None)
 
         return ConversationHandler.END

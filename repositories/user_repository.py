@@ -27,6 +27,17 @@ class UserRepository:
             .first()
         )
 
+    def get_by_full_name(self, full_name: str) -> User | None:
+        full_name = (full_name or "").strip()
+        if not full_name:
+            return None
+        return (
+            self.db.query(User)
+            .filter(User.full_name.is_not(None))
+            .filter(User.full_name.ilike(full_name))
+            .first()
+        )
+
     def list_all(self) -> list[User]:
         return self.db.query(User).all()
 
