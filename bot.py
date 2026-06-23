@@ -42,6 +42,15 @@ TASK_DONE_K = 200
 MEETING_ATTENDANCE_INPUT = 300
 SUBMIT_SELECT_TASK = 400
 
+# Interactive task-management command states
+ASSIGN_SELECT_TASK, ASSIGN_SELECT_USER = range(500, 502)
+UNASSIGN_SELECT_TASK, UNASSIGN_SELECT_USER = range(510, 512)
+BLOCK_SELECT_TASK = 520
+UNBLOCK_SELECT_TASK = 530
+
+# Points history pagination
+PH_PER_PAGE = 10
+
 (
     ADD_PROJECT,
     ADD_TITLE,
@@ -2664,55 +2673,28 @@ async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-async def block_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_user_membership(update, context):
-        return
-    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
-        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
-        return
-
-    if not context.args or not context.args[0].isdigit():
-        await safe_reply(update, context, "⚠️ Используй: /block_task <ID задачи> [причина]")
-        return
-
-    task_id = int(context.args[0])
-    reason = " ".join(context.args[1:]).strip() if len(context.args) > 1 else None
-    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
-
+async def _do_block_task(task_id: int, actor_db_id: int, reason: str | None):
+    """Shared block logic. Returns (task, error_str)."""
     def _get(task_service: TaskService):
         return task_service.get_task_by_id(task_id)
 
     task = with_task_service(_get)
     if not task:
-        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
-        return
+        return None, f"❌ Задача #{task_id} не найдена."
 
-    if task.status not in {"available", "in_progress", "review", "overdue"}:
-        await safe_reply(
-            update,
-            context,
-            f"⚠️ Нельзя заблокировать задачу из статуса {format_task_status(task.status)}."
-        )
-        return
+    blockable = {"available", "in_progress", "review", "overdue"}
+    if task.status not in blockable:
+        return None, f"⚠️ Нельзя заблокировать задачу из статуса {format_task_status(task.status)}."
 
     old_status = task.status
     task_title = task.title
-
-    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
-    reserved_users = []
-
-    for link in active_links:
-        user = getattr(link, "user", None)
-        if user:
-            reserved_users.append(user.telegram_user_id)
 
     def _block(task_service: TaskService):
         return task_service.block_task(task_id)
 
     updated = with_task_service(_block)
     if not updated:
-        await safe_reply(update, context, f"❌ Не удалось заблокировать задачу #{task_id}.")
-        return
+        return None, f"❌ Не удалось заблокировать задачу #{task_id}."
 
     def _log(log_service: LogService):
         log_service.log_audit(
@@ -2720,12 +2702,8 @@ async def block_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             action_type="block_task",
             entity_type="task",
             entity_id=task_id,
-            payload={
-                "title": task_title,
-                "reason": reason,
-            }
+            payload={"title": task_title, "reason": reason}
         )
-
         log_service.log_task_history(
             task_id=task_id,
             actor_user_id=actor_db_id,
@@ -2736,43 +2714,129 @@ async def block_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     with_log_service(_log)
+    return updated, None
 
-    await safe_reply(
-        update,
-        context,
-        f"⛔ Задача #{task_id} заблокирована."
-    )
 
-    for tg_id in reserved_users:
+async def block_task_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return ConversationHandler.END
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return ConversationHandler.END
+
+    def _tasks(task_service: TaskService):
+        return task_service.list_all_non_done_tasks()
+
+    tasks = with_task_service(_tasks)
+    blockable = {"available", "in_progress", "review", "overdue"}
+    tasks = [t for t in tasks if t.status in blockable]
+
+    if not tasks:
+        await safe_reply(update, context, "😔 Нет задач, которые можно заблокировать.")
+        return ConversationHandler.END
+
+    buttons = []
+    for t in tasks[:40]:
+        project = getattr(getattr(t, "project", None), "title", "—")
+        emoji = TASK_STATUS_LABELS.get(t.status, ("⚪", ""))[0]
+        buttons.append([InlineKeyboardButton(
+            text=f"#{t.id} {emoji}[{project}] {t.title[:35]}",
+            callback_data=f"bt_task:{t.id}"
+        )])
+
+    await safe_reply(update, context, "📋 Выбери задачу для блокировки:", markup=InlineKeyboardMarkup(buttons))
+    return BLOCK_SELECT_TASK
+
+
+async def block_task_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not update.effective_user:
+        return ConversationHandler.END
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("bt_task:"):
+        return BLOCK_SELECT_TASK
+
+    task_id = int(data.split(":")[1])
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+
+    task, error = await _do_block_task(task_id, actor_db_id, reason=None)
+    if error:
+        await query.edit_message_text(error)
+        return ConversationHandler.END
+
+    await query.edit_message_text(f"⛔ Задача #{task_id} заблокирована.")
+
+    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+    for link in active_links:
+        user = getattr(link, "user", None)
+        if not user:
+            continue
         try:
-            text = (
-                f"⛔ <b>Задача заблокирована</b>\n\n"
-                f"🆔 #{task_id}\n"
-                f"🧩 <b>{task_title}</b>\n"
-            )
-            if reason:
-                text += f"📝 Причина: {html.escape(reason)}"
-
             await context.bot.send_message(
-                chat_id=tg_id,
-                text=text,
+                chat_id=user.telegram_user_id,
+                text=(
+                    f"⛔ <b>Задача заблокирована</b>\n\n"
+                    f"🆔 #{task_id}\n"
+                    f"🧩 <b>{task.title}</b>"
+                ),
                 parse_mode="HTML",
             )
         except Exception:
             pass
 
-async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return ConversationHandler.END
+
+
+def get_block_task_handler():
+    return ConversationHandler(
+        entry_points=[CommandHandler("block_task", block_task_entry)],
+        states={
+            BLOCK_SELECT_TASK: [CallbackQueryHandler(block_task_select_callback, pattern="^bt_task:")],
+        },
+        fallbacks=[],
+        allow_reentry=True,
+    )
+
+async def unblock_task_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return
+        return ConversationHandler.END
     if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
-        return
+        return ConversationHandler.END
 
-    if not context.args or not context.args[0].isdigit():
-        await safe_reply(update, context, "⚠️ Используй: /unblock_task <ID задачи>")
-        return
+    def _tasks(task_service: TaskService):
+        return task_service.task_repo.list_tasks_by_status(["blocked"])
 
-    task_id = int(context.args[0])
+    tasks = with_task_service(_tasks)
+    if not tasks:
+        await safe_reply(update, context, "😔 Нет заблокированных задач.")
+        return ConversationHandler.END
+
+    buttons = []
+    for t in tasks[:40]:
+        project = getattr(getattr(t, "project", None), "title", "—")
+        buttons.append([InlineKeyboardButton(
+            text=f"#{t.id} ⛔[{project}] {t.title[:35]}",
+            callback_data=f"ubt_task:{t.id}"
+        )])
+
+    await safe_reply(update, context, "📋 Выбери задачу для разблокировки:", markup=InlineKeyboardMarkup(buttons))
+    return UNBLOCK_SELECT_TASK
+
+
+async def unblock_task_select_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not update.effective_user:
+        return ConversationHandler.END
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("ubt_task:"):
+        return UNBLOCK_SELECT_TASK
+
+    task_id = int(data.split(":")[1])
     actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
 
     def _get(task_service: TaskService):
@@ -2780,35 +2844,24 @@ async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     task = with_task_service(_get)
     if not task:
-        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
-        return
+        await query.edit_message_text(f"❌ Задача #{task_id} не найдена.")
+        return ConversationHandler.END
 
     if task.status != "blocked":
-        await safe_reply(
-            update,
-            context,
-            f"⚠️ Разблокировать можно только задачу в статусе {format_task_status('blocked')}."
-        )
-        return
+        await query.edit_message_text(f"⚠️ Задача #{task_id} уже не заблокирована.")
+        return ConversationHandler.END
 
     active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
     target_status = "in_progress" if active_links else "available"
     task_title = task.title
-
-    reserved_users = []
-
-    for link in active_links:
-        user = getattr(link, "user", None)
-        if user:
-            reserved_users.append(user.telegram_user_id)
 
     def _unblock(task_service: TaskService):
         return task_service.unblock_task(task_id, target_status=target_status)
 
     updated = with_task_service(_unblock)
     if not updated:
-        await safe_reply(update, context, f"❌ Не удалось разблокировать задачу #{task_id}.")
-        return
+        await query.edit_message_text(f"❌ Не удалось разблокировать задачу #{task_id}.")
+        return ConversationHandler.END
 
     def _log(log_service: LogService):
         log_service.log_audit(
@@ -2816,12 +2869,8 @@ async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
             action_type="unblock_task",
             entity_type="task",
             entity_id=task_id,
-            payload={
-                "title": task_title,
-                "target_status": target_status,
-            }
+            payload={"title": task_title, "target_status": target_status}
         )
-
         log_service.log_task_history(
             task_id=task_id,
             actor_user_id=actor_db_id,
@@ -2833,16 +2882,17 @@ async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with_log_service(_log)
 
-    await safe_reply(
-        update,
-        context,
+    await query.edit_message_text(
         f"🟢 Задача #{task_id} разблокирована. Новый статус: {format_task_status(target_status)}"
     )
 
-    for tg_id in reserved_users:
+    for link in active_links:
+        user = getattr(link, "user", None)
+        if not user:
+            continue
         try:
             await context.bot.send_message(
-                chat_id=tg_id,
+                chat_id=user.telegram_user_id,
                 text=(
                     f"🟢 <b>Задача разблокирована</b>\n\n"
                     f"🆔 #{task_id}\n"
@@ -2854,58 +2904,34 @@ async def unblock_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_user_membership(update, context):
-        return
-    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
-        await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
-        return
+    return ConversationHandler.END
 
-    if not context.args or len(context.args) < 2:
-        await safe_reply(
-            update,
-            context,
-            "⚠️ Используй: /unassign_task <ID задачи> <Полное имя>\n\nПример:\n/unassign_task 12 Станислав Палий"
-        )
-        return
 
-    if not context.args[0].isdigit():
-        await safe_reply(update, context, "⚠️ ID задачи должен быть числом.")
-        return
+def get_unblock_task_handler():
+    return ConversationHandler(
+        entry_points=[CommandHandler("unblock_task", unblock_task_entry)],
+        states={
+            UNBLOCK_SELECT_TASK: [CallbackQueryHandler(unblock_task_select_callback, pattern="^ubt_task:")],
+        },
+        fallbacks=[],
+        allow_reentry=True,
+    )
 
-    task_id = int(context.args[0])
-    full_name = " ".join(context.args[1:]).strip()
-
-    def _target(user_service: UserService):
-        return user_service.user_repo.get_by_full_name(full_name)
-
-    target_user = with_user_service(_target)
-    if not target_user:
-        await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
-        return
-
+async def _do_unassign_task_from_user(task_id: int, target_user, actor_db_id: int):
+    """Shared unassign logic, returns (updated_task, error_str)."""
     def _get(task_service: TaskService):
         return task_service.get_task_by_id(task_id)
 
     task = with_task_service(_get)
     if not task:
-        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
-        return
+        return None, f"❌ Задача #{task_id} не найдена."
 
     active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
-    active_user_ids = []
-    for link in active_links:
-        user = getattr(link, "user", None)
-        if user:
-            active_user_ids.append(user.telegram_user_id)
+    active_tg_ids = [getattr(a.user, "telegram_user_id", None) for a in active_links if getattr(a, "user", None)]
 
-    if target_user.telegram_user_id not in active_user_ids:
-        await safe_reply(
-            update,
-            context,
-            f"⚠️ Пользователь «{html.escape(full_name)}» не является активным исполнителем задачи #{task_id}."
-        )
-        return
+    if target_user.telegram_user_id not in active_tg_ids:
+        full_name = target_user.full_name or str(target_user.telegram_user_id)
+        return None, f"⚠️ Пользователь «{html.escape(full_name)}» не является активным исполнителем задачи #{task_id}."
 
     task_title = task.title
 
@@ -2914,11 +2940,11 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     updated_task = with_task_service(_unassign)
     if not updated_task:
-        await safe_reply(update, context, f"❌ Не удалось снять пользователя «{html.escape(full_name)}» с задачи #{task_id}.")
-        return
+        full_name = target_user.full_name or str(target_user.telegram_user_id)
+        return None, f"❌ Не удалось снять пользователя «{html.escape(full_name)}» с задачи #{task_id}."
 
-    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
     removed_user_db_id = get_internal_user_id_by_tg(target_user.telegram_user_id)
+    full_name = target_user.full_name or str(target_user.telegram_user_id)
 
     def _log(log_service: LogService):
         log_service.log_audit(
@@ -2933,7 +2959,6 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "removed_from_full_name": target_user.full_name,
             }
         )
-
         log_service.log_task_history(
             task_id=task_id,
             actor_user_id=actor_db_id,
@@ -2945,35 +2970,182 @@ async def unassign_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with_log_service(_log)
 
-    # Если после снятия никого не осталось — удаляем дедлайн-события
-    remaining_active_links = [a for a in getattr(updated_task, "assignees", []) if getattr(a, "is_active", False)]
-    if not remaining_active_links:
+    remaining_active = [a for a in getattr(updated_task, "assignees", []) if getattr(a, "is_active", False)]
+    if not remaining_active:
         def _remove_events(event_repo: EventRepository):
             return event_repo.remove_by_task_id(task_id)
+        with_event_repo(_remove_events)
 
-        removed = with_event_repo(_remove_events)
-        await safe_reply(
-            update,
-            context,
-            f"✅ Пользователь «{html.escape(full_name)}» снят с задачи #{task_id}. "
-            f"Задача снова свободна. Удалено связанных событий: {removed}."
-        )
+    return updated_task, None
+
+
+async def unassign_task_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return ConversationHandler.END
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
+        await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
+        return ConversationHandler.END
+
+    def _tasks(task_service: TaskService):
+        return task_service.list_assigned_tasks()
+
+    tasks = with_task_service(_tasks)
+    if not tasks:
+        await safe_reply(update, context, "😔 Нет задач с активными исполнителями.")
+        return ConversationHandler.END
+
+    buttons = []
+    for t in tasks[:40]:
+        project = getattr(getattr(t, "project", None), "title", "—")
+        active_count = sum(1 for a in getattr(t, "assignees", []) if getattr(a, "is_active", False))
+        buttons.append([InlineKeyboardButton(
+            text=f"#{t.id} [{project}] {t.title[:35]} ({active_count}👤)",
+            callback_data=f"uat_task:{t.id}"
+        )])
+
+    await safe_reply(update, context, "📋 Выбери задачу, с которой нужно снять исполнителя:", markup=InlineKeyboardMarkup(buttons))
+    return UNASSIGN_SELECT_TASK
+
+
+async def unassign_task_select_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return UNASSIGN_SELECT_TASK
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("uat_task:"):
+        return UNASSIGN_SELECT_TASK
+
+    task_id = int(data.split(":")[1])
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await query.edit_message_text(f"❌ Задача #{task_id} не найдена.")
+        return ConversationHandler.END
+
+    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+    if not active_links:
+        await query.edit_message_text(f"⚠️ У задачи #{task_id} нет активных исполнителей.")
+        return ConversationHandler.END
+
+    context.user_data["uat_task_id"] = task_id
+
+    # If only one assignee — skip user selection, unassign immediately
+    if len(active_links) == 1:
+        user = getattr(active_links[0], "user", None)
+        if not user:
+            await query.edit_message_text("❌ Не удалось определить исполнителя.")
+            return ConversationHandler.END
+
+        context.user_data["uat_task_id"] = task_id
+        actor_db_id = get_internal_user_id_by_tg(query.from_user.id if query.from_user else None)
+        updated_task, error = await _do_unassign_task_from_user(task_id, user, actor_db_id)
+
+        if error:
+            await query.edit_message_text(error)
+            return ConversationHandler.END
+
+        full_name = user.full_name or f"@{user.username}"
+        remaining = [a for a in getattr(updated_task, "assignees", []) if getattr(a, "is_active", False)]
+        if remaining:
+            msg = f"✅ Пользователь «{html.escape(full_name)}» снят с задачи #{task_id}. У задачи всё ещё есть активные исполнители."
+        else:
+            msg = f"✅ Пользователь «{html.escape(full_name)}» снят с задачи #{task_id}. Задача снова свободна."
+        await query.edit_message_text(msg)
+
+        try:
+            await query._bot.send_message(
+                chat_id=user.telegram_user_id,
+                text=f"⚠️ Задача <b>{task.title}</b> (#{task_id}) была снята с тебя администратором.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+        return ConversationHandler.END
+
+    # Multiple assignees — let admin pick which one
+    buttons = []
+    for link in active_links:
+        user = getattr(link, "user", None)
+        if not user:
+            continue
+        label = user.full_name or f"@{user.username}" or str(user.telegram_user_id)
+        buttons.append([InlineKeyboardButton(text=label, callback_data=f"uat_user:{user.telegram_user_id}")])
+
+    await query.edit_message_text(
+        f"👤 Выбери исполнителя для снятия с задачи #{task_id} «{html.escape(task.title[:50])}»:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+    return UNASSIGN_SELECT_USER
+
+
+async def unassign_task_select_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not update.effective_user:
+        return ConversationHandler.END
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("uat_user:"):
+        return UNASSIGN_SELECT_USER
+
+    tg_user_id = int(data.split(":")[1])
+    task_id = context.user_data.get("uat_task_id")
+    if not task_id:
+        await query.edit_message_text("⚠️ Контекст потерян. Запусти /unassign_task заново.")
+        return ConversationHandler.END
+
+    def _target(user_service: UserService):
+        return user_service.get_user_by_telegram_id(tg_user_id)
+
+    target_user = with_user_service(_target)
+    if not target_user:
+        await query.edit_message_text("❌ Пользователь не найден.")
+        return ConversationHandler.END
+
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+    updated_task, error = await _do_unassign_task_from_user(task_id, target_user, actor_db_id)
+
+    if error:
+        await query.edit_message_text(error)
+        return ConversationHandler.END
+
+    full_name = target_user.full_name or f"@{target_user.username}"
+    remaining = [a for a in getattr(updated_task, "assignees", []) if getattr(a, "is_active", False)]
+    if remaining:
+        msg = f"✅ Пользователь «{html.escape(full_name)}» снят с задачи #{task_id}. У задачи всё ещё есть активные исполнители."
     else:
-        await safe_reply(
-            update,
-            context,
-            f"✅ Пользователь «{html.escape(full_name)}» снят с задачи #{task_id}. "
-            f"У задачи всё ещё есть активные исполнители."
-        )
+        msg = f"✅ Пользователь «{html.escape(full_name)}» снят с задачи #{task_id}. Задача снова свободна."
+    await query.edit_message_text(msg)
 
     try:
         await context.bot.send_message(
             chat_id=target_user.telegram_user_id,
-            text=f"⚠️ Задача <b>{task_title}</b> (#{task_id}) была снята с тебя администратором.",
+            text=f"⚠️ Задача <b>{updated_task.title}</b> (#{task_id}) была снята с тебя администратором.",
             parse_mode="HTML",
         )
     except Exception:
         pass
+
+    context.user_data.pop("uat_task_id", None)
+    return ConversationHandler.END
+
+
+def get_unassign_task_handler():
+    return ConversationHandler(
+        entry_points=[CommandHandler("unassign_task", unassign_task_entry)],
+        states={
+            UNASSIGN_SELECT_TASK: [CallbackQueryHandler(unassign_task_select_task_callback, pattern="^uat_task:")],
+            UNASSIGN_SELECT_USER: [CallbackQueryHandler(unassign_task_select_user_callback, pattern="^uat_user:")],
+        },
+        fallbacks=[],
+        allow_reentry=True,
+    )
 
 async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -3150,121 +3322,213 @@ async def show_overdue(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, "\n".join(lines), parse_mode="HTML")
 
-async def assign_task_to_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def _do_assign_task(context, task_id: int, target_user, actor_db_id: int):
+    """Shared logic: assign a task and fire the side-effects."""
+    def _get_task(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task_before = with_task_service(_get_task)
+    if not task_before:
+        return None, f"❌ Задача #{task_id} не найдена."
+
+    active_links = [a for a in getattr(task_before, "assignees", []) if getattr(a, "is_active", False)]
+    if len(active_links) >= (task_before.max_assignees or 1):
+        return None, f"⚠️ Задача #{task_id} уже заполнена по исполнителям."
+
+    def _assign(task_service: TaskService):
+        return task_service.assign_task_to_user(task_id, target_user.telegram_user_id, WORK_TZ)
+
+    task = with_task_service(_assign)
+    if not task:
+        return None, f"❌ Не удалось назначить задачу #{task_id}."
+
+    def _ensure_event(event_repo: EventRepository):
+        links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+        tg_ids = [getattr(a.user, "telegram_user_id", None) for a in links if getattr(a, "user", None)]
+        tg_ids = [i for i in tg_ids if i]
+        if not tg_ids or not task.deadline_at:
+            event_repo.remove_by_task_id(task.id)
+            return None
+        return event_repo.upsert_deadline_event(
+            task_id=task.id,
+            telegram_user_ids=tg_ids,
+            title=f"Дедлайн по задаче #{task.id}",
+            description="Пожалуйста, заверши работу в срок.",
+            dt_value=task.deadline_at,
+        )
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="assign_task",
+            entity_type="task",
+            entity_id=task_id,
+            payload={
+                "assigned_to_user_id": target_user.id,
+                "assigned_to_telegram_user_id": target_user.telegram_user_id,
+                "task_title": task.title,
+            }
+        )
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="assigned_by_admin",
+            old_value=None,
+            new_value=str(target_user.id),
+            note="Админ назначил задачу пользователю"
+        )
+
+    with_log_service(_log)
+    with_event_repo(_ensure_event)
+    return task, None
+
+
+# ---- /assign_task conversation ----
+
+async def assign_task_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
-        return
+        return ConversationHandler.END
     if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
         await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
-        return
+        return ConversationHandler.END
 
-    if not context.args or len(context.args) < 2:
-        await safe_reply(
-            update,
-            context,
-            "⚠️ Используй так:\n<code>/assign_task &lt;ID задачи&gt; &lt;Полное имя&gt;</code>\n\nПример:\n<code>/assign_task 2 Игорь Франкенштейн</code>",
-            parse_mode="HTML",
-        )
-        return
+    def _tasks(task_service: TaskService):
+        return task_service.task_repo.list_available_tasks()
+
+    tasks = with_task_service(_tasks)
+    if not tasks:
+        await safe_reply(update, context, "😔 Нет доступных задач для назначения.")
+        return ConversationHandler.END
+
+    buttons = []
+    for t in tasks[:40]:
+        project = getattr(getattr(t, "project", None), "title", "—")
+        buttons.append([InlineKeyboardButton(
+            text=f"#{t.id} [{project}] {t.title[:40]}",
+            callback_data=f"at_task:{t.id}"
+        )])
+
+    await safe_reply(update, context, "📋 Выбери задачу для назначения:", markup=InlineKeyboardMarkup(buttons))
+    return ASSIGN_SELECT_TASK
+
+
+async def assign_task_select_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return ASSIGN_SELECT_TASK
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("at_task:"):
+        return ASSIGN_SELECT_TASK
+
+    task_id = int(data.split(":")[1])
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await query.edit_message_text(f"❌ Задача #{task_id} не найдена.")
+        return ConversationHandler.END
+
+    active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
+    if len(active_links) >= (task.max_assignees or 1):
+        await query.edit_message_text(f"⚠️ Задача #{task_id} уже заполнена по исполнителям ({len(active_links)}/{task.max_assignees}).")
+        return ConversationHandler.END
+
+    context.user_data["at_task_id"] = task_id
+
+    def _users(user_service: UserService):
+        return user_service.user_repo.list_active_team_members()
+
+    members = with_user_service(_users)
+    # Exclude already-assigned users
+    assigned_tg_ids = {
+        getattr(a.user, "telegram_user_id", None)
+        for a in active_links if getattr(a, "user", None)
+    }
+    members = [m for m in members if m.telegram_user_id not in assigned_tg_ids]
+
+    if not members:
+        await query.edit_message_text("😔 Нет доступных участников для назначения.")
+        return ConversationHandler.END
+
+    buttons = []
+    for m in members:
+        label = m.full_name or f"@{m.username}" or str(m.telegram_user_id)
+        buttons.append([InlineKeyboardButton(text=label, callback_data=f"at_user:{m.telegram_user_id}")])
+
+    await query.edit_message_text(
+        f"👤 Выбери участника для задачи #{task_id} «{html.escape(task.title[:50])}»:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+        parse_mode="HTML",
+    )
+    return ASSIGN_SELECT_USER
+
+
+async def assign_task_select_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query or not update.effective_user:
+        return ConversationHandler.END
+    await query.answer()
+
+    data = query.data or ""
+    if not data.startswith("at_user:"):
+        return ASSIGN_SELECT_USER
+
+    tg_user_id = int(data.split(":")[1])
+    task_id = context.user_data.get("at_task_id")
+    if not task_id:
+        await query.edit_message_text("⚠️ Контекст потерян. Запусти /assign_task заново.")
+        return ConversationHandler.END
+
+    def _target(user_service: UserService):
+        return user_service.get_user_by_telegram_id(tg_user_id)
+
+    target_user = with_user_service(_target)
+    if not target_user:
+        await query.edit_message_text("❌ Пользователь не найден.")
+        return ConversationHandler.END
+
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+    task, error = await _do_assign_task(context, task_id, target_user, actor_db_id)
+
+    if error:
+        await query.edit_message_text(error)
+        return ConversationHandler.END
+
+    full_name = target_user.full_name or f"@{target_user.username}"
+    await query.edit_message_text(f"✅ Задача #{task_id} назначена пользователю «{html.escape(full_name)}».")
 
     try:
-        task_id = int(context.args[0])
-        full_name = " ".join(context.args[1:]).strip()
+        await context.bot.send_message(
+            chat_id=target_user.telegram_user_id,
+            text=(
+                f"📌 Тебе назначена новая задача!\n\n"
+                f"<b>{task.title}</b> (#{task_id})\n"
+                f"{html.escape(task.description or '')}\n\n"
+                f"⏰ Дедлайн: {format_datetime_rus(task.deadline_at)}"
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
 
-        def _target(user_service: UserService):
-            return user_service.user_repo.get_by_full_name(full_name)
+    context.user_data.pop("at_task_id", None)
+    return ConversationHandler.END
 
-        target_user = with_user_service(_target)
-        if not target_user:
-            await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
-            return
 
-        def _get_task(task_service: TaskService):
-            return task_service.get_task_by_id(task_id)
-
-        task_before = with_task_service(_get_task)
-        if not task_before:
-            await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
-            return
-
-        active_links = [a for a in getattr(task_before, "assignees", []) if getattr(a, "is_active", False)]
-        if len(active_links) >= (task_before.max_assignees or 1):
-            await safe_reply(update, context, f"⚠️ Задача #{task_id} уже заполнена по исполнителям.")
-            return
-
-        def _assign(task_service: TaskService):
-            return task_service.assign_task_to_user(task_id, target_user.telegram_user_id, WORK_TZ)
-
-        task = with_task_service(_assign)
-        if not task:
-            await safe_reply(update, context, f"❌ Не удалось назначить задачу #{task_id}.")
-            return
-
-        def _ensure_event(event_repo: EventRepository):
-            active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
-            tg_user_ids = []
-
-            for link in active_links:
-                user = getattr(link, "user", None)
-                if user:
-                    tg_user_ids.append(user.telegram_user_id)
-
-            if not tg_user_ids or not task.deadline_at:
-                event_repo.remove_by_task_id(task.id)
-                return None
-
-            return event_repo.upsert_deadline_event(
-                task_id=task.id,
-                telegram_user_ids=tg_user_ids,
-                title=f"Дедлайн по задаче #{task.id}",
-                description="Пожалуйста, заверши работу в срок.",
-                dt_value=task.deadline_at,
-            )
-        
-        actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
-        
-        def _log(log_service: LogService):
-            log_service.log_audit(
-                actor_user_id=actor_db_id,
-                action_type="assign_task",
-                entity_type="task",
-                entity_id=task_id,
-                payload={
-                    "assigned_to_user_id": target_user.id,
-                    "assigned_to_telegram_user_id": target_user.telegram_user_id,
-                    "task_title": task.title,
-                }
-            )
-
-            log_service.log_task_history(
-                task_id=task_id,
-                actor_user_id=actor_db_id,
-                action_type="assigned_by_admin",
-                old_value=None,
-                new_value=str(target_user.id),
-                note="Админ назначил задачу пользователю"
-            )
-
-        with_log_service(_log)
-
-        with_event_repo(_ensure_event)
-        await safe_reply(update, context, f"✅ Задача #{task_id} назначена пользователю «{html.escape(full_name)}».")
-
-        try:
-            await context.bot.send_message(
-                chat_id=target_user.telegram_user_id,
-                text=(
-                    f"📌 Тебе назначена новая задача!\n\n"
-                    f"<b>{task.title}</b> (#{task_id})\n"
-                    f"{html.escape(task.description or '')}\n\n"
-                    f"⏰ Дедлайн: {format_datetime_rus(task.deadline_at)}"
-                ),
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-
-    except Exception as e:
-        await safe_reply(update, context, f"❌ Ошибка: {e}")
+def get_assign_task_handler():
+    return ConversationHandler(
+        entry_points=[CommandHandler("assign_task", assign_task_entry)],
+        states={
+            ASSIGN_SELECT_TASK: [CallbackQueryHandler(assign_task_select_task_callback, pattern="^at_task:")],
+            ASSIGN_SELECT_USER: [CallbackQueryHandler(assign_task_select_user_callback, pattern="^at_user:")],
+        },
+        fallbacks=[],
+        allow_reentry=True,
+    )
 
 async def add_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -3372,51 +3636,12 @@ async def delete_checkitem(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, f"🗑 Удалён пункт чеклиста: {item_title}")
 
-async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.effective_user or not has_permission(update.effective_user.id, "manage_points"):
-        await safe_reply(update, context, "❌ У тебя нет доступа к истории баллов.")
-        return
+def _build_points_history_page(items: list, page: int, total: int, header: str) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Build paginated points history text + nav keyboard for one page of items."""
+    per_page = PH_PER_PAGE
+    total_pages = max(1, (total + per_page - 1) // per_page)
 
-    full_name = None
-    target_user = None
-
-    if context.args:
-        full_name = " ".join(context.args).strip()
-
-        def _find_user(user_service: UserService):
-            return user_service.user_repo.get_by_full_name(full_name)
-
-        target_user = with_user_service(_find_user)
-        if not target_user:
-            await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
-            return
-
-        target_user_id = target_user.id
-    else:
-        target_user_id = None
-
-    def _run(log_service: LogService):
-        return log_service.get_recent_points_ledger_filtered(
-            user_id=target_user_id,
-            limit=30,
-        )
-
-    items = with_log_service(_run)
-    if not items:
-        if full_name:
-            await safe_reply(update, context, f"📭 История баллов для {html.escape(full_name)} пуста.")
-        else:
-            await safe_reply(update, context, "📭 История баллов пуста.")
-        return
-
-    lines = []
-
-    if full_name:
-        lines.append(f"🏆 <b>История баллов {html.escape(full_name)}</b>")
-    else:
-        lines.append("🏆 <b>Общая история баллов</b>")
-
-    lines.append("")
+    lines = [header, ""]
 
     for item in items:
         amount = int(item.amount) if item.amount is not None else 0
@@ -3446,11 +3671,100 @@ async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         lines.append("")
 
+    lines.append(f"📄 Страница {page}/{total_pages} (всего {total} записей)")
+
     text = "\n".join(lines).strip()
     if len(text) > 4000:
         text = text[:3900] + "\n\n...[обрезано]"
 
-    await safe_reply(update, context, text, parse_mode="HTML")
+    # Build nav row
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"ph_page:{page-1}"))
+    nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="ph_noop"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"ph_page:{page+1}"))
+
+    markup = InlineKeyboardMarkup([nav]) if len(nav) > 1 else None
+    return text, markup
+
+
+async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_points"):
+        await safe_reply(update, context, "❌ У тебя нет доступа к истории баллов.")
+        return
+
+    full_name = None
+    target_user_id = None
+
+    if context.args:
+        full_name = " ".join(context.args).strip()
+
+        def _find_user(user_service: UserService):
+            return user_service.user_repo.get_by_full_name(full_name)
+
+        target_user = with_user_service(_find_user)
+        if not target_user:
+            await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
+            return
+        target_user_id = target_user.id
+
+    # Fetch ALL records (no limit) so we can paginate properly
+    def _run(log_service: LogService):
+        return log_service.get_recent_points_ledger_filtered(
+            user_id=target_user_id,
+            limit=10000,
+        )
+
+    all_items = with_log_service(_run)
+    if not all_items:
+        msg = f"📭 История баллов для {html.escape(full_name)} пуста." if full_name else "📭 История баллов пуста."
+        await safe_reply(update, context, msg)
+        return
+
+    # Store for pagination callback
+    context.user_data["ph_items"] = all_items
+    context.user_data["ph_full_name"] = full_name
+
+    header = f"🏆 <b>История баллов {html.escape(full_name)}</b>" if full_name else "🏆 <b>Общая история баллов</b>"
+    page_items = all_items[:PH_PER_PAGE]
+    text, markup = _build_points_history_page(page_items, 1, len(all_items), header)
+
+    await safe_reply(update, context, text, markup=markup, parse_mode="HTML")
+
+
+async def points_history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
+
+    data = query.data or ""
+    if data == "ph_noop":
+        return
+    if not data.startswith("ph_page:"):
+        return
+
+    page = int(data.split(":")[1])
+    all_items = context.user_data.get("ph_items", [])
+    full_name = context.user_data.get("ph_full_name")
+
+    if not all_items:
+        await query.edit_message_text("⚠️ Данные устарели. Запусти /points_history заново.")
+        return
+
+    per_page = PH_PER_PAGE
+    total = len(all_items)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+
+    start = (page - 1) * per_page
+    page_items = all_items[start:start + per_page]
+
+    header = f"🏆 <b>История баллов {html.escape(full_name)}</b>" if full_name else "🏆 <b>Общая история баллов</b>"
+    text, markup = _build_points_history_page(page_items, page, total, header)
+
+    await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
 
 async def set_next_meeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -3947,6 +4261,8 @@ def main():
     app.add_handler(CommandHandler("my_points", my_points))
     app.add_handler(CommandHandler("check_points", check_points))
     app.add_handler(CommandHandler("points_history", points_history))
+    app.add_handler(CallbackQueryHandler(points_history_page_callback, pattern="^ph_page:"))
+    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer() if u.callback_query else None, pattern="^ph_noop$"))
     app.add_handler(CommandHandler("leaderboard", leaderboard_menu))
     app.add_handler(CallbackQueryHandler(leaderboard_project_callback, pattern="^lb_proj:"))
     app.add_handler(CommandHandler("leaderboard_project", leaderboard_project))
@@ -3955,10 +4271,10 @@ def main():
     app.add_handler(CommandHandler("submit_task", submit_task))
     app.add_handler(get_task_done_handler())
     app.add_handler(CommandHandler("return_task", return_task))
-    app.add_handler(CommandHandler("unassign_task", unassign_task))
-    app.add_handler(CommandHandler("assign_task", assign_task_to_user))
-    app.add_handler(CommandHandler("block_task", block_task))
-    app.add_handler(CommandHandler("unblock_task", unblock_task))
+    app.add_handler(get_unassign_task_handler())
+    app.add_handler(get_assign_task_handler())
+    app.add_handler(get_block_task_handler())
+    app.add_handler(get_unblock_task_handler())
     app.add_handler(CommandHandler("set_deadline", set_deadline))
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))
     app.add_handler(CommandHandler("overdue_tasks", show_overdue))

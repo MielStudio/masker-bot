@@ -429,3 +429,9 @@ class TaskService:
     
     def get_submittable_tasks_for_admin(self):
         return self.task_repo.list_tasks_by_status(["in_progress"])
+
+    def list_assigned_tasks(self) -> list:
+        return self.task_repo.list_assigned_tasks()
+
+    def list_all_non_done_tasks(self) -> list:
+        return self.task_repo.list_all_non_done_tasks()

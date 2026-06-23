@@ -457,3 +457,36 @@ class TaskRepository:
             .order_by(Task.id.asc())
             .all()
         )
+
+    def list_assigned_tasks(self) -> list[Task]:
+        """Tasks that have at least one active assignee (any status except done/backlog)."""
+        return (
+            self.db.query(Task)
+            .options(
+                joinedload(Task.assignees).joinedload(TaskAssignee.user),
+                joinedload(Task.project),
+                joinedload(Task.required_work_role),
+                joinedload(Task.category),
+            )
+            .join(TaskAssignee, Task.id == TaskAssignee.task_id)
+            .filter(TaskAssignee.is_active.is_(True))
+            .filter(Task.status.not_in(["done", "backlog"]))
+            .order_by(Task.id.asc())
+            .distinct()
+            .all()
+        )
+
+    def list_all_non_done_tasks(self) -> list[Task]:
+        """All tasks except done/backlog — used for /block_task selection."""
+        return (
+            self.db.query(Task)
+            .options(
+                joinedload(Task.assignees).joinedload(TaskAssignee.user),
+                joinedload(Task.project),
+                joinedload(Task.required_work_role),
+                joinedload(Task.category),
+            )
+            .filter(Task.status.not_in(["done", "backlog"]))
+            .order_by(Task.id.asc())
+            .all()
+        )
