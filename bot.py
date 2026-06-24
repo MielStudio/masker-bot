@@ -639,6 +639,7 @@ def build_user_bot_commands(user_id: int) -> list[BotCommand]:
             BotCommand("delete_checkitem", "Удалить пункт чеклиста"),
             BotCommand("run_overdue", "Проверить просрочки"),
             BotCommand("overdue_tasks", "Просроченные задачи"),
+            BotCommand("run_idle_check", "Напомнить о задачах простаивающим"),
         ])
 
     if has_permission(user_id, "review_tasks"):
@@ -3382,6 +3383,154 @@ async def _do_assign_task(context, task_id: int, target_user, actor_db_id: int):
     with_event_repo(_ensure_event)
     return task, None
 
+async def run_idle_check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    now = datetime.now(WORK_TZ)
+
+    def _idle(user_service: UserService):
+        return user_service.get_idle_users(now, IDLE_REMINDER_DAYS)
+
+    idle_users = with_user_service(_idle)
+    if not idle_users:
+        await safe_reply(update, context, "✅ Нет участников, которым нужно напоминание о задачах.")
+        return
+
+    notified = []
+    skipped = []
+
+    for user in idle_users:
+        tg_id = user.telegram_user_id
+        user_record = get_user_by_id(tg_id)
+        if not user_record:
+            skipped.append(user.full_name or str(tg_id))
+            continue
+
+        def _suggest(task_service: TaskService):
+            return task_service.get_suggested_tasks_for_user(user_record, limit=3)
+
+        suggested = with_task_service(_suggest)
+
+        if suggested:
+            def _cards(task_service: TaskService):
+                return [task_service.format_task_card(t) for t in suggested]
+
+            cards = with_task_service(_cards)
+
+            text = (
+                "👋 Привет! Ты давно не брал задачи.\n"
+                "Вот несколько подходящих под твою роль вариантов:\n\n"
+                + "\n\n".join(cards)
+                + "\n\nИспользуй /get_task, чтобы взять задачу."
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=tg_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+                notified.append(user.full_name or str(tg_id))
+            except Exception:
+                skipped.append(user.full_name or str(tg_id))
+        else:
+            skipped.append(user.full_name or str(tg_id))
+
+        def _mark(user_service: UserService):
+            return user_service.update_last_idle_reminder(tg_id, now)
+
+        with_user_service(_mark)
+
+    lines = [f"📨 Проверка простоя завершена.", ""]
+    lines.append(f"✅ Уведомлено: {len(notified)}")
+    if notified:
+        lines.append(", ".join(notified))
+    lines.append("")
+    lines.append(f"⏭ Пропущено (нет задач/ошибка): {len(skipped)}")
+    if skipped:
+        lines.append(", ".join(skipped))
+
+    await safe_reply(update, context, "\n".join(lines))
+
+async def run_idle_check(context: ContextTypes.DEFAULT_TYPE | None = None) -> tuple[list[str], list[str]]:
+    now = datetime.now(WORK_TZ)
+
+    def _idle(user_service: UserService):
+        return user_service.get_idle_users(now, IDLE_REMINDER_DAYS)
+
+    idle_users = with_user_service(_idle)
+    notified, skipped = [], []
+
+    for user in idle_users:
+        tg_id = user.telegram_user_id
+        user_record = get_user_by_id(tg_id)
+        label = user.full_name or str(tg_id)
+
+        if not user_record:
+            skipped.append(label)
+            continue
+
+        def _suggest(task_service: TaskService):
+            return task_service.get_suggested_tasks_for_user(user_record, limit=3)
+
+        suggested = with_task_service(_suggest)
+
+        if suggested and context:
+            def _cards(task_service: TaskService):
+                return [task_service.format_task_card(t) for t in suggested]
+
+            cards = with_task_service(_cards)
+            text = (
+                "👋 Привет! Ты давно не брал задачи.\n"
+                "Вот несколько подходящих под твою роль вариантов:\n\n"
+                + "\n\n".join(cards)
+                + "\n\nИспользуй /get_task, чтобы взять задачу."
+            )
+            try:
+                await context.bot.send_message(chat_id=tg_id, text=text, parse_mode="HTML")
+                notified.append(label)
+            except Exception:
+                skipped.append(label)
+        else:
+            skipped.append(label)
+
+        def _mark(user_service: UserService):
+            return user_service.update_last_idle_reminder(tg_id, now)
+
+        with_user_service(_mark)
+
+    return notified, skipped
+
+async def idle_task_reminder_job(context: ContextTypes.DEFAULT_TYPE):
+    await run_idle_check(context)
+
+async def run_idle_check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    notified, skipped = await run_idle_check(context)
+
+    if not notified and not skipped:
+        await safe_reply(update, context, "✅ Нет участников, которым нужно напоминание о задачах.")
+        return
+
+    lines = ["📨 Проверка простоя завершена.", ""]
+    lines.append(f"✅ Уведомлено: {len(notified)}")
+    if notified:
+        lines.append(", ".join(notified))
+    lines.append("")
+    lines.append(f"⏭ Пропущено: {len(skipped)}")
+    if skipped:
+        lines.append(", ".join(skipped))
+
+    await safe_reply(update, context, "\n".join(lines))
 
 # ---- /assign_task conversation ----
 
@@ -3410,7 +3559,6 @@ async def assign_task_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, "📋 Выбери задачу для назначения:", markup=InlineKeyboardMarkup(buttons))
     return ASSIGN_SELECT_TASK
-
 
 async def assign_task_select_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -3466,7 +3614,6 @@ async def assign_task_select_task_callback(update: Update, context: ContextTypes
     )
     return ASSIGN_SELECT_USER
 
-
 async def assign_task_select_user_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if not query or not update.effective_user:
@@ -3517,7 +3664,6 @@ async def assign_task_select_user_callback(update: Update, context: ContextTypes
 
     context.user_data.pop("at_task_id", None)
     return ConversationHandler.END
-
 
 def get_assign_task_handler():
     return ConversationHandler(
@@ -3688,7 +3834,6 @@ def _build_points_history_page(items: list, page: int, total: int, header: str) 
     markup = InlineKeyboardMarkup([nav]) if len(nav) > 1 else None
     return text, markup
 
-
 async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.effective_user or not has_permission(update.effective_user.id, "manage_points"):
         await safe_reply(update, context, "❌ У тебя нет доступа к истории баллов.")
@@ -3731,7 +3876,6 @@ async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text, markup = _build_points_history_page(page_items, 1, len(all_items), header)
 
     await safe_reply(update, context, text, markup=markup, parse_mode="HTML")
-
 
 async def points_history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -3828,6 +3972,55 @@ async def set_next_meeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context,
         f"✅ Ближайшее собрание перенесено на {format_datetime_rus(new_dt)}."
     )
+
+async def idle_task_reminder(context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(WORK_TZ)
+
+    def _idle(user_service: UserService):
+        return user_service.get_idle_users(now, IDLE_REMINDER_DAYS)
+
+    idle_users = with_user_service(_idle)
+    if not idle_users:
+        return
+
+    for user in idle_users:
+        tg_id = user.telegram_user_id
+        user_record = get_user_by_id(tg_id)
+        if not user_record:
+            continue
+
+        def _suggest(task_service: TaskService):
+            return task_service.get_suggested_tasks_for_user(user_record, limit=3)
+
+        suggested = with_task_service(_suggest)
+
+        if suggested:
+            def _cards(task_service: TaskService):
+                return [task_service.format_task_card(t) for t in suggested]
+
+            cards = with_task_service(_cards)
+
+            text = (
+                "👋 Привет! Ты давно не брал задачи.\n"
+                "Вот несколько подходящих под твою роль вариантов:\n\n"
+                + "\n\n".join(cards)
+                + "\n\nИспользуй /get_task, чтобы взять задачу."
+            )
+
+            try:
+                await context.bot.send_message(
+                    chat_id=tg_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+
+        # обновляем метку независимо от результата, чтобы не спамить каждый прогон
+        def _mark(user_service: UserService):
+            return user_service.update_last_idle_reminder(tg_id, now)
+
+        with_user_service(_mark)
 
 async def finish_meeting(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -4207,6 +4400,13 @@ async def post_init(app: Application) -> None:
             name="ensure_weekly_meeting_exists",
         )
 
+        app.job_queue.run_repeating(
+            idle_task_reminder_job,
+            interval=86400,            # раз в сутки
+            first=IDLE_REMINDER_START_DELAY_SEC,
+            name="idle_task_reminder",
+        )
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print("=== ERROR HANDLER ===")
     print("Update:", update)
@@ -4278,6 +4478,7 @@ def main():
     app.add_handler(CommandHandler("set_deadline", set_deadline))
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))
     app.add_handler(CommandHandler("overdue_tasks", show_overdue))
+    app.add_handler(CommandHandler("run_idle_check", run_idle_check_now))
     app.add_handler(CommandHandler("set_next_meeting", set_next_meeting))
     app.add_handler(CommandHandler("task_checklist", task_checklist))
     app.add_handler(CommandHandler("add_checkitem", add_checkitem))

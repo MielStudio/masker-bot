@@ -1,7 +1,8 @@
-from sqlalchemy import text
+from datetime import datetime, timedelta
+from sqlalchemy import text, or_
 from sqlalchemy.orm import Session
 
-from database.models import User
+from database.models import User, TaskAssignee
 
 
 class UserRepository:
@@ -86,3 +87,26 @@ class UserRepository:
 
     def has_permission(self, telegram_user_id: int, permission_code: str) -> bool:
         return permission_code in self.get_permission_codes(telegram_user_id)
+    
+    def list_idle_users(self, now: datetime, idle_days: int) -> list[User]:
+        """Активные участники без активных задач, которым пора напомнить."""
+        threshold = now - timedelta(days=idle_days)
+
+        active_assignee_subq = (
+            self.db.query(TaskAssignee.user_id)
+            .filter(TaskAssignee.is_active.is_(True))
+            .subquery()
+        )
+
+        return (
+            self.db.query(User)
+            .filter(User.is_active.is_(True))
+            .filter(~User.id.in_(active_assignee_subq))
+            .filter(
+                or_(
+                    User.last_idle_reminder_at.is_(None),
+                    User.last_idle_reminder_at <= threshold,
+                )
+            )
+            .all()
+        )

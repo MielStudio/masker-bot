@@ -246,6 +246,30 @@ class TaskService:
     def unblock_task(self, task_id: int, target_status: str = "available"):
         return self.task_repo.transition_status(task_id, target_status)
     
+    def get_suggested_tasks_for_user(self, user_record: dict, limit: int = 3) -> list[dict]:
+        role_codes: list[str] = []
+        for item in user_record.get("roles_ext", []) or []:
+            role_id = item.get("id")
+            if role_id:
+                role_codes.append(role_id)
+
+        tasks = self.task_repo.list_available_tasks()
+
+        filtered = []
+        for task in tasks:
+            if role_codes:
+                task_role_code = None
+                if getattr(task, "required_work_role", None):
+                    task_role_code = task.required_work_role.code
+                if task_role_code and task_role_code not in role_codes:
+                    continue
+            filtered.append(task)
+
+        # приоритет — задачи без указанной роли (общие) идут после ролевых
+        filtered.sort(key=lambda t: 0 if getattr(t, "required_work_role", None) else 1)
+
+        return [self.task_to_legacy_dict(t) for t in filtered[:limit]]
+    
     def can_user_submit_task(self, task, telegram_user_id: int) -> bool:
         if not task:
             return False

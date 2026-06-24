@@ -24,6 +24,9 @@ class UserService:
 
     def has_permission(self, telegram_user_id: int, permission_code: str) -> bool:
         return self.user_repo.has_permission(telegram_user_id, permission_code)
+    
+    def get_idle_users(self, now, idle_days: int):
+        return self.user_repo.list_idle_users(now, idle_days)
 
     def user_to_legacy_dict(self, user: User) -> dict:
         role_names: list[str] = []
