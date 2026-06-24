@@ -88,6 +88,14 @@ class UserRepository:
     def has_permission(self, telegram_user_id: int, permission_code: str) -> bool:
         return permission_code in self.get_permission_codes(telegram_user_id)
     
+    def set_active_status(self, telegram_user_id: int, is_active: bool) -> bool:
+        user = self.get_by_telegram_id(telegram_user_id)
+        if not user:
+            return False
+        user.is_active = is_active
+        self.db.commit()
+        return True
+
     def list_idle_users(self, now: datetime, idle_days: int) -> list[User]:
         """Активные участники без активных задач, которым пора напомнить."""
         threshold = now - timedelta(days=idle_days)

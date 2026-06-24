@@ -27,6 +27,15 @@ class UserService:
     
     def get_idle_users(self, now, idle_days: int):
         return self.user_repo.list_idle_users(now, idle_days)
+    
+    def set_active_status(self, telegram_user_id: int, is_active: bool) -> bool:
+        return self.user_repo.set_active_status(telegram_user_id, is_active)
+
+    def get_is_active(self, telegram_user_id: int) -> bool | None:
+        user = self.user_repo.get_by_telegram_id(telegram_user_id)
+        if not user:
+            return None
+        return user.is_active
 
     def user_to_legacy_dict(self, user: User) -> dict:
         role_names: list[str] = []

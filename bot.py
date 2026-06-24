@@ -613,6 +613,7 @@ def build_user_bot_commands(user_id: int) -> list[BotCommand]:
         BotCommand("upcoming_events", "Посмотреть грядущие события"),
         BotCommand("my_points", "Увидеть свои баллы"),
         BotCommand("leaderboard", "Общий рейтинг"),
+        BotCommand("set_my_status", "Изменить свой статус (active/inactive)"),
         BotCommand("my_task", "Посмотреть свои задачи"),
         BotCommand("submit_task", "Отправить задачу на проверку"),
         BotCommand("task_checklist", "Чеклист задачи"),
@@ -653,6 +654,14 @@ def build_user_bot_commands(user_id: int) -> list[BotCommand]:
             BotCommand("set_next_meeting", "Перенести собрание"),
             BotCommand("finish_meeting", "Завершить собрание"),
         ])
+    
+    if has_permission(user_id, "manage_users"):
+        commands.extend([
+            "/set_user_status — изменить статус участника",
+        ])
+    
+    if has_permission(user_id, "manage_users"):
+        commands.append(BotCommand("set_user_status", "Изменить статус участника"))
 
     if has_permission(user_id, "view_admin_reports"):
         commands.extend([
@@ -711,6 +720,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/upcoming_events — ближайшие события",
         "/my_points — мои баллы",
         "/leaderboard — общий рейтинг участников",
+        "/set_my_status — переключить свой статус (active/inactive)",
         "/my_task — мои текущие задачи",
         "/submit_task — отправить свою задачу на проверку",
         "/task_checklist — посмотреть чеклист задачи",
@@ -837,6 +847,49 @@ async def my_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await safe_reply(update, context, "\n".join(lines), parse_mode="HTML")
 
+async def set_my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user:
+        return
+
+    if not context.args or context.args[0].lower() not in {"active", "inactive"}:
+        await safe_reply(update, context, "⚠️ Используй: /set_my_status active или /set_my_status inactive")
+        return
+
+    new_status = context.args[0].lower() == "active"
+    tg_id = update.effective_user.id
+
+    def _set(user_service: UserService):
+        return user_service.set_active_status(tg_id, new_status)
+
+    ok = with_user_service(_set)
+    if not ok:
+        await safe_reply(update, context, "❌ Не удалось изменить статус.")
+        return
+
+    actor_db_id = get_internal_user_id_by_tg(tg_id)
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="set_own_status",
+            entity_type="user",
+            entity_id=actor_db_id,
+            payload={"is_active": new_status},
+        )
+
+    with_log_service(_log)
+
+    status_text = "🟢 активен" if new_status else "⚪ неактивен"
+    await safe_reply(
+        update,
+        context,
+        f"✅ Твой статус обновлён: {status_text}.\n\n"
+        + ("" if new_status else
+           "ℹ️ В статусе «неактивен» тебе не приходят уведомления о собраниях, "
+           "и ты не можешь брать новые задачи — ни сам, ни через назначение администратором.")
+    )
 
 async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -1591,6 +1644,19 @@ async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
 
+    def _active(user_service: UserService):
+        return user_service.get_is_active(user_id)
+
+    is_active = with_user_service(_active)
+    if not is_active:
+        await safe_reply(
+            update,
+            context,
+            "⚠️ Твой статус сейчас «неактивен». Чтобы брать задачи, "
+            "переключи статус: /set_my_status active"
+        )
+        return ConversationHandler.END
+    
     print("=== /get_task ===")
     print("user_id =", user_id)
 
@@ -1618,7 +1684,6 @@ async def get_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await safe_reply(update, context, "🔧 Выбери проект:", markup)
     return SELECT_PROJECT
-
 
 async def select_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -1709,6 +1774,14 @@ async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(f"⚠️ Нельзя иметь более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно.")
         return ConversationHandler.END
 
+    def _active(user_service: UserService):
+        return user_service.get_is_active(user_id)
+
+    is_active = with_user_service(_active)
+    if not is_active:
+        await query.edit_message_text("⚠️ Твой статус «неактивен». Сначала включи: /set_my_status active")
+        return ConversationHandler.END
+    
     def _assign(task_service: TaskService):
         return task_service.assign_task_with_auto_deadline(task_id, user_id, WORK_TZ)
 
@@ -2592,6 +2665,79 @@ def get_task_done_handler():
         allow_reentry=True,
     )
 
+async def set_user_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    user = update.effective_user
+    if not user or not (is_super_admin(user.id) or has_permission(user.id, "manage_users")):
+        await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    if len(context.args) < 2 or context.args[-1].lower() not in {"active", "inactive"}:
+        await safe_reply(
+            update,
+            context,
+            "⚠️ Используй: /set_user_status <Полное имя> <active|inactive>\n\n"
+            "Пример:\n/set_user_status Станислав Палий inactive"
+        )
+        return
+
+    new_status = context.args[-1].lower() == "active"
+    full_name = " ".join(context.args[:-1]).strip()
+
+    def _target(user_service: UserService):
+        return user_service.user_repo.get_by_full_name(full_name)
+
+    target_user = with_user_service(_target)
+    if not target_user:
+        await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
+        return
+
+    tg_id = target_user.telegram_user_id
+
+    def _set(user_service: UserService):
+        return user_service.set_active_status(tg_id, new_status)
+
+    ok = with_user_service(_set)
+    if not ok:
+        await safe_reply(update, context, "❌ Не удалось изменить статус.")
+        return
+
+    actor_db_id = get_internal_user_id_by_tg(user.id)
+    target_db_id = get_internal_user_id_by_tg(tg_id)
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="set_user_status",
+            entity_type="user",
+            entity_id=target_db_id,
+            payload={"target_full_name": full_name, "is_active": new_status},
+        )
+
+    with_log_service(_log)
+
+    status_text = "🟢 активен" if new_status else "⚪ неактивен"
+    await safe_reply(
+        update,
+        context,
+        f"✅ Статус «{html.escape(full_name)}» обновлён: {status_text}."
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=tg_id,
+            text=(
+                f"ℹ️ Твой статус изменён администратором: <b>{status_text}</b>.\n"
+                + ("" if new_status else
+                   "В статусе «неактивен» тебе не приходят уведомления о собраниях, "
+                   "и ты не можешь брать новые задачи.")
+            ),
+            parse_mode="HTML",
+        )
+    except Exception:
+        pass
+
 async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
@@ -3335,6 +3481,13 @@ async def _do_assign_task(context, task_id: int, target_user, actor_db_id: int):
     active_links = [a for a in getattr(task_before, "assignees", []) if getattr(a, "is_active", False)]
     if len(active_links) >= (task_before.max_assignees or 1):
         return None, f"⚠️ Задача #{task_id} уже заполнена по исполнителям."
+
+    if not getattr(target_user, "is_active", True):
+        full_name = target_user.full_name or f"@{target_user.username}" or str(target_user.telegram_user_id)
+        return None, (
+            f"⚠️ Пользователь «{html.escape(full_name)}» сейчас неактивен. "
+            f"Сначала переведи его в активный статус: /set_user_status {full_name} active"
+        )
 
     def _assign(task_service: TaskService):
         return task_service.assign_task_to_user(task_id, target_user.telegram_user_id, WORK_TZ)
@@ -4452,6 +4605,7 @@ def main():
     app.add_handler(CommandHandler("admin_help", admin_help))
     app.add_handler(CommandHandler("logs", logs_command))
     app.add_handler(CommandHandler("upcoming_events", upcoming_events))
+    app.add_handler(CommandHandler("set_my_status", set_my_status))
 
     app.add_handler(build_give_points_handler(
         get_points_service=create_points_service,
@@ -4475,6 +4629,7 @@ def main():
     app.add_handler(get_assign_task_handler())
     app.add_handler(get_block_task_handler())
     app.add_handler(get_unblock_task_handler())
+    app.add_handler(CommandHandler("set_user_status", set_user_status))
     app.add_handler(CommandHandler("set_deadline", set_deadline))
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))
     app.add_handler(CommandHandler("overdue_tasks", show_overdue))
