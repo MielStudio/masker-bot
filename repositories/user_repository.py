@@ -39,6 +39,24 @@ class UserRepository:
             .first()
         )
 
+    def get_all_by_full_name(self, full_name: str) -> list[User]:
+        """Return every user matching this full name (case-insensitive).
+
+        full_name is not unique-constrained in the schema, so this can
+        legitimately return more than one row. Callers must not silently
+        pick one — resolving an ambiguous match is the caller's job.
+        """
+        full_name = (full_name or "").strip()
+        if not full_name:
+            return []
+        return (
+            self.db.query(User)
+            .filter(User.full_name.is_not(None))
+            .filter(User.full_name.ilike(full_name))
+            .order_by(User.id.asc())
+            .all()
+        )
+
     def list_all(self) -> list[User]:
         return self.db.query(User).all()
 

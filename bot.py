@@ -169,6 +169,57 @@ def get_user_by_id(user_id: int):
 
     return with_user_service(_run)
 
+# =========================
+# FULL-NAME RESOLUTION (full_name isn't unique-constrained, so collisions
+# are possible and must never be resolved by silently guessing).
+# =========================
+
+def find_user_candidates_by_full_name(full_name: str) -> list:
+    def _run(user_service: UserService):
+        return user_service.user_repo.get_all_by_full_name(full_name)
+    return with_user_service(_run)
+
+def format_user_candidates(candidates: list) -> str:
+    lines = []
+    for u in candidates:
+        tag = f"@{u.username}" if u.username else f"id{u.telegram_user_id}"
+        status = "🟢" if u.is_active else "⚪"
+        lines.append(f"{status} {u.full_name} ({tag})")
+    return "\n".join(lines)
+
+def resolve_admin_target_user(raw_args: list[str]):
+    """Resolve a target user from command args that name someone by full name,
+    with an optional @username token anywhere in the args to disambiguate.
+
+    Returns (user_or_None, remaining_args, candidates).
+    - user set                       -> resolved cleanly, use it.
+    - user is None, candidates empty -> nobody matched that name.
+    - user is None, candidates set   -> ambiguous; show format_user_candidates(candidates)
+                                         and ask the admin to add @username.
+    remaining_args is raw_args with any @username token removed, so callers
+    can still find trailing tokens (e.g. "active"/"inactive") at fixed positions.
+    """
+    args = list(raw_args)
+    username_tag = None
+    for i, a in enumerate(args):
+        if a.startswith("@") and len(a) > 1:
+            username_tag = args.pop(i)[1:]
+            break
+
+    if username_tag:
+        def _run(user_service: UserService):
+            return user_service.user_repo.get_by_username(username_tag)
+        user = with_user_service(_run)
+        return user, args, []
+
+    full_name = " ".join(args).strip()
+    candidates = find_user_candidates_by_full_name(full_name)
+    if len(candidates) == 1:
+        return candidates[0], args, []
+    if len(candidates) == 0:
+        return None, args, []
+    return None, args, candidates
+
 async def safe_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, markup=None, parse_mode=None):
     target = update.effective_message
     if target:
@@ -1820,61 +1871,40 @@ async def task_catalog_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     return SELECT_TASK
 
-async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if not query:
-        return ConversationHandler.END
-
-    await query.answer()
-    data = query.data or ""
-
-    if data == "confirm_take:no":
-        await query.edit_message_text("❌ Выбор отменён.")
-        return ConversationHandler.END
-
-    if data != "confirm_take:yes":
-        return CONFIRM
-
-    task_id = context.user_data.get("task_id")
-    user_id = context.user_data.get("user_id")
-    if not task_id or not user_id:
-        await query.edit_message_text("⚠️ Не удалось подтвердить выбор.")
-        return ConversationHandler.END
-
+def _self_assign_task(task_id: int, user_id: int):
+    """Shared self-assign logic used by /get_task's confirm step and the
+    idle-reminder 'take task' button. Returns (task, None) on success or
+    (None, error_message) on failure — never raises for expected failures."""
     def _count(task_service: TaskService):
         return task_service.count_user_active_tasks(user_id)
 
     active_count = with_task_service(_count)
     if active_count >= MAX_ACTIVE_TASKS_PER_USER:
-        await query.edit_message_text(f"⚠️ Нельзя иметь более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно.")
-        return ConversationHandler.END
+        return None, f"⚠️ Нельзя иметь более {MAX_ACTIVE_TASKS_PER_USER} задач одновременно."
 
     def _active(user_service: UserService):
         return user_service.get_is_active(user_id)
 
     is_active = with_user_service(_active)
     if not is_active:
-        await query.edit_message_text("⚠️ Твой статус «неактивен». Сначала включи: /set_my_status active")
-        return ConversationHandler.END
-    
+        return None, "⚠️ Твой статус «неактивен». Сначала включи: /set_my_status active"
+
     def _assign(task_service: TaskService):
         return task_service.assign_task_with_auto_deadline(task_id, user_id, WORK_TZ)
 
     task = with_task_service(_assign)
-    actor_db_id = get_internal_user_id_by_tg(user_id)
-
     if not task:
-        await query.edit_message_text(f"⚠️ Задача #{task_id} не найдена или недоступна.")
-        return ConversationHandler.END
+        return None, f"⚠️ Задача #{task_id} не найдена или недоступна."
+
+    actor_db_id = get_internal_user_id_by_tg(user_id)
 
     def _ensure_event(event_repo: EventRepository):
         active_links = [a for a in getattr(task, "assignees", []) if getattr(a, "is_active", False)]
         tg_user_ids = []
-
         for link in active_links:
-            user = getattr(link, "user", None)
-            if user:
-                tg_user_ids.append(user.telegram_user_id)
+            u = getattr(link, "user", None)
+            if u:
+                tg_user_ids.append(u.telegram_user_id)
 
         if not tg_user_ids or not task.deadline_at:
             event_repo.remove_by_task_id(task.id)
@@ -1899,7 +1929,6 @@ async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 "deadline": task.deadline_at.isoformat() if task.deadline_at else None
             }
         )
-
         log_service.log_task_history(
             task_id=task.id,
             actor_user_id=actor_db_id,
@@ -1911,6 +1940,34 @@ async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     with_log_service(_log)
     with_event_repo(_ensure_event)
+
+    return task, None
+
+async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return ConversationHandler.END
+
+    await query.answer()
+    data = query.data or ""
+
+    if data == "confirm_take:no":
+        await query.edit_message_text("❌ Выбор отменён.")
+        return ConversationHandler.END
+
+    if data != "confirm_take:yes":
+        return CONFIRM
+
+    task_id = context.user_data.get("task_id")
+    user_id = context.user_data.get("user_id")
+    if not task_id or not user_id:
+        await query.edit_message_text("⚠️ Не удалось подтвердить выбор.")
+        return ConversationHandler.END
+
+    task, error = _self_assign_task(task_id, user_id)
+    if error:
+        await query.edit_message_text(error)
+        return ConversationHandler.END
 
     await query.edit_message_text(f"✅ Задача #{task.id} назначена тебе.")
     return ConversationHandler.END
@@ -2454,13 +2511,27 @@ async def check_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text("⚠️ Формат: /check_points <Полное имя>")
+        await update.message.reply_text("⚠️ Формат: /check_points <Полное имя>\n\nЕсли есть тёзки: /check_points <Полное имя> @username")
         return
 
     full_name = " ".join(context.args).strip()
+    target_user, _remaining, candidates = resolve_admin_target_user(context.args)
+
+    if candidates:
+        await update.message.reply_text(
+            f"⚠️ Найдено несколько участников с именем «{html.escape(full_name)}»:\n\n"
+            f"{format_user_candidates(candidates)}\n\n"
+            f"Уточни через @username, например:\n"
+            f"/check_points {full_name} @username"
+        )
+        return
+
+    if not target_user:
+        await update.message.reply_text("❌ Пользователь не найден.")
+        return
 
     def _run(points_service: PointsService):
-        return points_service.get_user_points_summary_by_full_name(full_name)
+        return points_service.get_user_points_summary(target_user.telegram_user_id)
 
     summary = with_points_service(_run)
     if not summary:
@@ -2767,17 +2838,29 @@ async def set_user_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             update,
             context,
             "⚠️ Используй: /set_user_status <Полное имя> <active|inactive>\n\n"
-            "Пример:\n/set_user_status Станислав Палий inactive"
+            "Пример:\n/set_user_status Станислав Палий inactive\n\n"
+            "Если есть тёзки, уточни через @username:\n"
+            "/set_user_status Станислав Палий @stas_p inactive"
         )
         return
 
     new_status = context.args[-1].lower() == "active"
-    full_name = " ".join(context.args[:-1]).strip()
+    name_args = context.args[:-1]
+    full_name = " ".join(name_args).strip()
 
-    def _target(user_service: UserService):
-        return user_service.user_repo.get_by_full_name(full_name)
+    target_user, _remaining, candidates = resolve_admin_target_user(name_args)
 
-    target_user = with_user_service(_target)
+    if candidates:
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Найдено несколько участников с именем «{html.escape(full_name)}»:\n\n"
+            f"{format_user_candidates(candidates)}\n\n"
+            f"Уточни через @username, например:\n"
+            f"/set_user_status {full_name} @username {'active' if new_status else 'inactive'}"
+        )
+        return
+
     if not target_user:
         await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
         return
@@ -4079,10 +4162,16 @@ async def run_idle_check(context: ContextTypes.DEFAULT_TYPE | None = None) -> tu
                 "👋 Привет! Ты давно не брал задачи.\n"
                 "Вот несколько подходящих под твою роль вариантов:\n\n"
                 + "\n\n".join(cards)
-                + "\n\nИспользуй /get_task, чтобы взять задачу."
+                + "\n\nНажми на кнопку ниже, чтобы сразу взять задачу, "
+                  "или используй /get_task для полного списка."
             )
+            take_buttons = [
+                [InlineKeyboardButton(f"✅ Взять #{t.id}: {t.title[:30]}", callback_data=f"idle_take:{t.id}")]
+                for t in suggested
+            ]
+            markup = InlineKeyboardMarkup(take_buttons)
             try:
-                await context.bot.send_message(chat_id=tg_id, text=text, parse_mode="HTML")
+                await context.bot.send_message(chat_id=tg_id, text=text, parse_mode="HTML", reply_markup=markup)
                 notified.append(label)
             except Exception:
                 skipped.append(label)
@@ -4095,6 +4184,45 @@ async def run_idle_check(context: ContextTypes.DEFAULT_TYPE | None = None) -> tu
         with_user_service(_mark)
 
     return notified, skipped
+
+async def idle_take_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles the ✅ button on an idle-reminder message, letting a user
+    take a suggested task directly from the notification."""
+    query = update.callback_query
+    if not query or not update.effective_user:
+        return
+
+    data = query.data or ""
+    if not data.startswith("idle_take:"):
+        return
+
+    task_id = int(data.split(":")[1])
+    user_id = update.effective_user.id
+
+    task, error = _self_assign_task(task_id, user_id)
+
+    if error:
+        await query.answer(text=error, show_alert=True)
+        return
+
+    await query.answer(text=f"✅ Задача #{task.id} «{task.title}» взята!", show_alert=True)
+
+    # Remove just this task's button so it can't be double-taken; leave the
+    # rest so the user can still grab another suggestion from the same reminder.
+    old_markup = query.message.reply_markup if query.message else None
+    new_rows = []
+    if old_markup:
+        for row in old_markup.inline_keyboard:
+            new_row = [btn for btn in row if btn.callback_data != data]
+            if new_row:
+                new_rows.append(new_row)
+
+    try:
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup(new_rows) if new_rows else None
+        )
+    except Exception:
+        pass
 
 async def idle_task_reminder_job(context: ContextTypes.DEFAULT_TYPE):
     await run_idle_check(context)
@@ -4440,11 +4568,19 @@ async def points_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if context.args:
         full_name = " ".join(context.args).strip()
+        target_user, _remaining, candidates = resolve_admin_target_user(context.args)
 
-        def _find_user(user_service: UserService):
-            return user_service.user_repo.get_by_full_name(full_name)
+        if candidates:
+            await safe_reply(
+                update,
+                context,
+                f"⚠️ Найдено несколько участников с именем «{html.escape(full_name)}»:\n\n"
+                f"{format_user_candidates(candidates)}\n\n"
+                f"Уточни через @username, например:\n"
+                f"/points_history {full_name} @username"
+            )
+            return
 
-        target_user = with_user_service(_find_user)
         if not target_user:
             await safe_reply(update, context, f"❌ Пользователь «{html.escape(full_name)}» не найден.")
             return
@@ -5082,6 +5218,7 @@ def main():
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))
     app.add_handler(CommandHandler("overdue_tasks", show_overdue))
     app.add_handler(CommandHandler("run_idle_check", run_idle_check_now))
+    app.add_handler(CallbackQueryHandler(idle_take_callback, pattern="^idle_take:"))
     app.add_handler(CommandHandler("set_next_meeting", set_next_meeting))
     app.add_handler(CommandHandler("task_checklist", task_checklist))
     app.add_handler(CommandHandler("add_checkitem", add_checkitem))

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Callable, List
+from collections import Counter
+from typing import Callable, List, Tuple
 
 import html
 import shlex
@@ -9,23 +10,38 @@ import shlex
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import CommandHandler, MessageHandler, ConversationHandler, ContextTypes, filters
 
-from services.points_service import PointsService
+from services.points_service import PointsService, AmbiguousFullNameError
 
 
 GP_USER, GP_PROJECT, GP_POINTS, GP_CONFIRM = range(200, 204)
 
 
-def _all_full_names(get_points_service: Callable[[], PointsService]) -> List[str]:
+def _build_name_picker(get_points_service: Callable[[], PointsService]) -> Tuple[List[List[str]], dict]:
+    """Build reply-keyboard rows for picking a team member by name.
+
+    full_name is not unique-constrained, so when two users share a name we
+    disambiguate the button label with their @username (or db id, if no
+    username) rather than showing two identical, unpickable buttons.
+    Returns (rows_for_keyboard, {label: telegram_user_id}).
+    """
     points_service = get_points_service()
     users = points_service.user_repo.list_all()
+    named = [u for u in users if (u.full_name or "").strip()]
 
-    out = []
-    for u in users:
-        name = (u.full_name or "").strip()
-        if name:
-            out.append(name)
+    name_counts = Counter((u.full_name or "").strip().lower() for u in named)
 
-    return sorted(out, key=str.lower)
+    label_map: dict[str, int] = {}
+    for u in sorted(named, key=lambda u: u.full_name.strip().lower()):
+        name = u.full_name.strip()
+        if name_counts[name.lower()] > 1:
+            tag = f"@{u.username}" if u.username else f"id{u.telegram_user_id}"
+            label = f"{name} ({tag})"
+        else:
+            label = name
+        label_map[label] = u.telegram_user_id
+
+    rows = [[label] for label in label_map.keys()]
+    return rows, label_map
 
 
 def _all_projects(get_points_service: Callable[[], PointsService]) -> List[dict]:
@@ -49,20 +65,17 @@ def _all_projects(get_points_service: Callable[[], PointsService]) -> List[dict]
         for p in projects
     ]
 
-def _apply_points(
+def _apply_points_by_user_id(
     get_points_service: Callable[[], PointsService],
-    full_name: str,
+    telegram_user_id: int,
+    display_name: str,
     project_id: int,
     project_title: str,
     delta: int,
 ) -> None:
+    """Give points to a user already resolved to a specific telegram_user_id.
+    No name lookup happens here, so there's no ambiguity risk left to hit."""
     points_service = get_points_service()
-    summary = points_service.get_user_points_summary_by_full_name(full_name)
-    if not summary:
-        raise ValueError(f"Пользователь «{full_name}» не найден")
-
-    telegram_user_id = summary["user_id"]
-
     ok = points_service.add_points(
         telegram_user_id=telegram_user_id,
         points_to_add=int(delta),
@@ -71,9 +84,44 @@ def _apply_points(
         reason="Ручное начисление админом",
         source_type="manual",
     )
-
     if not ok:
-        raise ValueError(f"Не удалось начислить баллы пользователю «{full_name}»")
+        raise ValueError(f"Не удалось начислить баллы пользователю «{display_name}»")
+
+
+def _apply_points_by_name_or_tag(
+    get_points_service: Callable[[], PointsService],
+    name_or_tag: str,
+    project_id: int,
+    project_title: str,
+    delta: int,
+) -> None:
+    """Used by the quick-args path (typed text, no picker involved).
+
+    Accepts either a plain full name or an @username tag. A bare full name
+    that matches more than one person raises AmbiguousFullNameError instead
+    of guessing — the caller must catch it and show the candidates.
+    """
+    points_service = get_points_service()
+
+    if name_or_tag.startswith("@") and len(name_or_tag) > 1:
+        user = points_service.user_repo.get_by_username(name_or_tag[1:])
+        if not user:
+            raise ValueError(f"Пользователь «{name_or_tag}» не найден")
+        _apply_points_by_user_id(
+            get_points_service, user.telegram_user_id, user.full_name or name_or_tag,
+            project_id, project_title, delta,
+        )
+        return
+
+    summary = points_service.get_user_points_summary_by_full_name(name_or_tag)
+    if not summary:
+        raise ValueError(f"Пользователь «{name_or_tag}» не найден")
+
+    _apply_points_by_user_id(
+        get_points_service, summary["user_id"], name_or_tag,
+        project_id, project_title, delta,
+    )
+
 
 
 def build_give_points_handler(
@@ -93,22 +141,34 @@ def build_give_points_handler(
                 if len(args) < 3:
                     raise ValueError("Мало аргументов")
 
-                full_name = args[0]
+                name_or_tag = args[0]
                 project = args[1]
                 delta = int(args[2])
 
-                _apply_points(get_points_service, full_name, project, delta)
+                _apply_points_by_name_or_tag(get_points_service, name_or_tag, project, delta)
 
                 await update.message.reply_text(
-                    f"✅ Добавлено {delta} балл(ов) пользователю «{full_name}» по «{project}»."
+                    f"✅ Добавлено {delta} балл(ов) пользователю «{name_or_tag}» по «{project}»."
                 )
                 return ConversationHandler.END
+
+            except AmbiguousFullNameError as e:
+                lines = [f"⚠️ Найдено несколько участников с именем «{e.full_name}»:", ""]
+                for u in e.candidates:
+                    tag = f"@{u.username}" if u.username else f"id{u.telegram_user_id}"
+                    status = "🟢" if u.is_active else "⚪"
+                    lines.append(f"{status} {u.full_name} ({tag})")
+                lines.append("")
+                lines.append(f"Уточни: /give_points \"{e.full_name}\" @username <проект> <баллы>")
+                lines.append("Или выбери участника ниже — там имена уже без путаницы:")
+                await update.message.reply_text("\n".join(lines))
 
             except Exception as e:
                 await update.message.reply_text(f"⚠️ {e}\nЗапускаю мастер добавления баллов…")
 
-        full_names = _all_full_names(get_points_service)
-        kb = ReplyKeyboardMarkup([[name] for name in full_names], resize_keyboard=True, one_time_keyboard=True)
+        rows, label_map = _build_name_picker(get_points_service)
+        context.user_data["gp_label_map"] = label_map
+        kb = ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=True)
         await update.message.reply_text("Кому начислим баллы? Выбери участника:", reply_markup=kb)
         return GP_USER
 
@@ -116,7 +176,17 @@ def build_give_points_handler(
         if not update.message or not update.message.text:
             return ConversationHandler.END
 
-        context.user_data["gp_full_name"] = update.message.text.strip()
+        label = update.message.text.strip()
+        label_map = context.user_data.get("gp_label_map", {})
+
+        if label not in label_map:
+            await update.message.reply_text("⚠️ Выбери участника кнопкой из списка.")
+            return GP_USER
+
+        # Resolved to an exact telegram_user_id at picker time — no name
+        # lookup (and therefore no ambiguity) happens later in this flow.
+        context.user_data["gp_telegram_user_id"] = label_map[label]
+        context.user_data["gp_full_name"] = label
 
         projects = _all_projects(get_points_service)
 
@@ -184,8 +254,9 @@ def build_give_points_handler(
 
         if update.message.text.lower().startswith("д"):
             try:
-                _apply_points(
+                _apply_points_by_user_id(
                     get_points_service,
+                    context.user_data["gp_telegram_user_id"],
                     context.user_data["gp_full_name"],
                     context.user_data["gp_project_id"],
                     context.user_data["gp_project_title"],
@@ -197,7 +268,7 @@ def build_give_points_handler(
         else:
             await update.message.reply_text("❌ Отменено.", reply_markup=ReplyKeyboardRemove())
 
-        for k in ("gp_full_name", "gp_project_id", "gp_project_title", "gp_projects_map", "gp_delta"):
+        for k in ("gp_full_name", "gp_telegram_user_id", "gp_label_map", "gp_project_id", "gp_project_title", "gp_projects_map", "gp_delta"):
             context.user_data.pop(k, None)
 
         return ConversationHandler.END

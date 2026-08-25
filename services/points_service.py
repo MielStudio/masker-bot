@@ -6,6 +6,19 @@ from database.models import PointsLedger, Project
 from sqlalchemy import func
 
 
+class AmbiguousFullNameError(Exception):
+    """Raised when a full-name lookup matches more than one user.
+
+    full_name is not unique-constrained, so silently picking the first
+    match risks acting on the wrong person (wrong points, wrong status).
+    Callers must catch this and ask the admin to disambiguate.
+    """
+    def __init__(self, full_name: str, candidates: list):
+        self.full_name = full_name
+        self.candidates = candidates
+        super().__init__(f"Найдено несколько участников с именем «{full_name}»")
+
+
 class PointsService:
     def __init__(self, user_repo: UserRepository, log_repo: LogRepository | None = None):
         self.user_repo = user_repo
@@ -90,10 +103,13 @@ class PointsService:
         }
 
     def get_user_points_summary_by_full_name(self, full_name: str) -> dict | None:
-        user = self.user_repo.get_by_full_name(full_name)
-        if not user:
+        candidates = self.user_repo.get_all_by_full_name(full_name)
+        if not candidates:
             return None
+        if len(candidates) > 1:
+            raise AmbiguousFullNameError(full_name, candidates)
 
+        user = candidates[0]
         return {
             "user_id": user.telegram_user_id,
             "username": user.username,
