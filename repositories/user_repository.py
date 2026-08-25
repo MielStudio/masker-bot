@@ -58,6 +58,32 @@ class UserRepository:
             is not None
         )
 
+    def create_user(
+        self,
+        *,
+        telegram_user_id: int,
+        full_name: str | None = None,
+        username: str | None = None,
+        language_code: str | None = None,
+        is_active: bool = True,
+    ) -> User:
+        now = datetime.utcnow()
+        user = User(
+            telegram_user_id=telegram_user_id,
+            username=username,
+            full_name=full_name,
+            joined_at=now,
+            is_active=is_active,
+            total_points=0,
+            language_code=language_code,
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(user)
+        self.db.commit()
+        self.db.refresh(user)
+        return user
+
     def update_last_idle_reminder(self, telegram_user_id: int, dt_value) -> bool:
         user = self.get_by_telegram_id(telegram_user_id)
         if not user:

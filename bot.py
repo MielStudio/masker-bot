@@ -658,6 +658,7 @@ def build_user_bot_commands(user_id: int) -> list[BotCommand]:
     
     if has_permission(user_id, "manage_users"):
         commands.append(BotCommand("set_user_status", "Изменить статус участника"))
+        commands.append(BotCommand("add_user", "Добавить нового участника"))
 
     if has_permission(user_id, "view_admin_reports"):
         commands.extend([
@@ -764,6 +765,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "<b>События:</b>",
             "/set_next_meeting — перенести собрание",
             "/finish_meeting — завершить собрание и внести attendance",
+        ])
+
+    if has_permission(user_id, "manage_users"):
+        lines.extend([
+            "",
+            "<b>Участники:</b>",
+            "/add_user — добавить нового участника",
+            "/set_user_status — изменить статус участника",
         ])
 
     if has_permission(user_id, "view_admin_reports"):
@@ -2344,6 +2353,14 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "",
         ])
 
+    if has_permission(user.id, "manage_users"):
+        lines.extend([
+            "<b>Участники:</b>",
+            "/add_user [telegram_id] [username|-] [полное имя] — добавить участника",
+            "/set_user_status [полное имя] [active|inactive] — изменить статус",
+            "",
+        ])
+
     if has_permission(user.id, "view_admin_reports"):
         lines.extend([
             "<b>Логи и отчёты:</b>",
@@ -2735,6 +2752,92 @@ async def set_user_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception:
         pass
+
+ADD_USER_USAGE = (
+    "⚠️ Используй: /add_user &lt;telegram_user_id&gt; &lt;username|-&gt; &lt;полное имя&gt;\n\n"
+    "username укажи без @, или поставь \"-\", если он неизвестен.\n\n"
+    "Примеры:\n"
+    "/add_user 123456789 ivan_petrov Иван Петров\n"
+    "/add_user 123456789 - Иван Петров"
+)
+
+
+async def add_user_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    user = update.effective_user
+    if not user or not (is_super_admin(user.id) or has_permission(user.id, "manage_users")):
+        await safe_reply(update, context, "❌ Ты слишком слаб чтобы использовать это заклинание")
+        return
+
+    if not update.message or not update.message.text:
+        return
+
+    # maxsplit=3 keeps the full_name intact even if it contains extra spaces
+    parts = update.message.text.split(maxsplit=3)
+    if len(parts) < 4 or not parts[1].isdigit() or not parts[3].strip():
+        await safe_reply(update, context, ADD_USER_USAGE, parse_mode="HTML")
+        return
+
+    telegram_user_id = int(parts[1])
+    username_raw = parts[2].strip()
+    username = None if username_raw == "-" else username_raw.lstrip("@").strip()
+    full_name = parts[3].strip()
+
+    def _existing(user_service: UserService):
+        return user_service.get_user_by_telegram_id(telegram_user_id)
+
+    existing = with_user_service(_existing)
+    if existing:
+        await safe_reply(
+            update,
+            context,
+            f"⚠️ Пользователь с ID {telegram_user_id} уже есть в базе: «{html.escape(existing.full_name or '—')}».",
+        )
+        return
+
+    def _create(user_service: UserService):
+        return user_service.create_user(
+            telegram_user_id=telegram_user_id,
+            full_name=full_name,
+            username=username,
+        )
+
+    try:
+        new_user = with_user_service(_create)
+    except Exception as e:
+        await safe_reply(update, context, f"❌ Не удалось добавить пользователя: {e}")
+        return
+
+    if not new_user:
+        await safe_reply(update, context, "❌ Не удалось добавить пользователя.")
+        return
+
+    actor_db_id = get_internal_user_id_by_tg(user.id)
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="add_user",
+            entity_type="user",
+            entity_id=new_user.id,
+            payload={
+                "telegram_user_id": telegram_user_id,
+                "username": username,
+                "full_name": full_name,
+            },
+        )
+
+    with_log_service(_log)
+
+    await safe_reply(
+        update,
+        context,
+        f"✅ Пользователь добавлен: <b>{html.escape(full_name)}</b>"
+        + (f" (@{html.escape(username)})" if username else "")
+        + f"\n🆔 telegram_id: {telegram_user_id}",
+        parse_mode="HTML",
+    )
 
 async def return_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -4878,6 +4981,7 @@ def main():
     app.add_handler(get_block_task_handler())
     app.add_handler(get_unblock_task_handler())
     app.add_handler(CommandHandler("set_user_status", set_user_status))
+    app.add_handler(CommandHandler("add_user", add_user_command))
     app.add_handler(CommandHandler("set_deadline", set_deadline))
     app.add_handler(CommandHandler("edit_task", edit_task_command))
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))

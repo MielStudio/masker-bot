@@ -16,6 +16,23 @@ class UserService:
     def is_team_member(self, telegram_user_id: int) -> bool:
         return self.user_repo.is_team_member(telegram_user_id)
 
+    def create_user(
+        self,
+        *,
+        telegram_user_id: int,
+        full_name: str | None = None,
+        username: str | None = None,
+        language_code: str | None = None,
+        is_active: bool = True,
+    ) -> User:
+        return self.user_repo.create_user(
+            telegram_user_id=telegram_user_id,
+            full_name=full_name,
+            username=username,
+            language_code=language_code,
+            is_active=is_active,
+        )
+
     def update_last_idle_reminder(self, telegram_user_id: int, dt_value: datetime) -> bool:
         return self.user_repo.update_last_idle_reminder(telegram_user_id, dt_value)
 
