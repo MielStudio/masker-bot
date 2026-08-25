@@ -51,6 +51,10 @@ UNBLOCK_SELECT_TASK = 530
 # Points history pagination
 PH_PER_PAGE = 10
 
+# My-task pagination — each task's block (desc + checklist) can be long,
+# so keep the page size small to stay well under Telegram's 4096-char limit.
+MY_TASK_PER_PAGE = 3
+
 (
     ADD_PROJECT,
     ADD_TITLE,
@@ -899,6 +903,62 @@ async def set_my_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
            "и ты не можешь брать новые задачи — ни сам, ни через назначение администратором.")
     )
 
+def _format_my_task_item(item: dict) -> str:
+    task = item["task"]
+    checklist_text = item["checklist_text"]
+
+    status_str = format_task_status(task.get("status"))
+    if task.get("deadline"):
+        dt = datetime.fromisoformat(task["deadline"]).replace(tzinfo=WORK_TZ)
+        deadline_str = format_datetime_rus(dt)
+    else:
+        deadline_str = "Не назначен"
+
+    checklist_block = ""
+    if checklist_text:
+        checklist_block = f"\n📋 Чеклист:\n{checklist_text}"
+
+    priority_str = format_task_priority(task.get("priority"))
+
+    return (
+        f"🔹 <b>{task['title']}</b> (#{task['id']})\n"
+        f"📌 Статус: {status_str}\n"
+        f"⚡ Приоритет: {priority_str}\n"
+        f"📄 {task.get('description') or 'Без описания'}\n"
+        f"📂 Тип: {task['type']}\n"
+        f"🏆 Баллы: {task['points']}\n"
+        f"⏰ Дедлайн: {deadline_str}"
+        f"{checklist_block}"
+    )
+
+def _build_my_task_page(page_items: list, page: int, total: int) -> tuple[str, InlineKeyboardMarkup | None]:
+    """Build paginated /my_task text + nav keyboard for one page of tasks."""
+    per_page = MY_TASK_PER_PAGE
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    lines = ["📝 <b>Твои текущие задачи:</b>", ""]
+    for item in page_items:
+        lines.append(_format_my_task_item(item))
+        lines.append("")
+
+    if total_pages > 1:
+        lines.append(f"📄 Страница {page}/{total_pages} (всего {total} задач)")
+
+    text = "\n".join(lines).strip()
+    if len(text) > 4000:
+        text = text[:3900] + "\n\n...[обрезано. Открой /task_checklist или /my_task для деталей конкретной задачи]"
+
+    nav = []
+    if page > 1:
+        nav.append(InlineKeyboardButton("⬅️", callback_data=f"mt_page:{page-1}"))
+    if total_pages > 1:
+        nav.append(InlineKeyboardButton(f"{page}/{total_pages}", callback_data="mt_noop"))
+    if page < total_pages:
+        nav.append(InlineKeyboardButton("➡️", callback_data=f"mt_page:{page+1}"))
+
+    markup = InlineKeyboardMarkup([nav]) if len(nav) > 1 else None
+    return text, markup
+
 async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
         return
@@ -929,37 +989,44 @@ async def my_task(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update, context, "😔 У тебя сейчас нет активных задач. Используй /get_task.")
         return
 
-    lines = ["📝 <b>Твои текущие задачи:</b>", ""]
-    for item in reserved_tasks:
-        task = item["task"]
-        checklist_text = item["checklist_text"]
+    # Store for pagination callback (mirrors the /points_history pattern)
+    context.user_data["mt_items"] = reserved_tasks
 
-        status_str = format_task_status(task.get("status"))
-        if task.get("deadline"):
-            dt = datetime.fromisoformat(task["deadline"]).replace(tzinfo=WORK_TZ)
-            deadline_str = format_datetime_rus(dt)
-        else:
-            deadline_str = "Не назначен"
+    page_items = reserved_tasks[:MY_TASK_PER_PAGE]
+    text, markup = _build_my_task_page(page_items, 1, len(reserved_tasks))
 
-        checklist_block = ""
-        if checklist_text:
-            checklist_block = f"\n📋 Чеклист:\n{checklist_text}"
+    await safe_reply(update, context, text, markup=markup, parse_mode="HTML")
 
-        priority_str = format_task_priority(task.get("priority"))
+async def my_task_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer()
 
-        lines.append(
-            f"🔹 <b>{task['title']}</b> (#{task['id']})\n"
-            f"📌 Статус: {status_str}\n"
-            f"⚡ Приоритет: {priority_str}\n"
-            f"📄 {task.get('description') or 'Без описания'}\n"
-            f"📂 Тип: {task['type']}\n"
-            f"🏆 Баллы: {task['points']}\n"
-            f"⏰ Дедлайн: {deadline_str}"
-            f"{checklist_block}"
-        )
-        lines.append("")
+    data = query.data or ""
+    if data == "mt_noop":
+        return
+    if not data.startswith("mt_page:"):
+        return
 
-    await safe_reply(update, context, "\n".join(lines).strip(), parse_mode="HTML")
+    page = int(data.split(":")[1])
+    all_items = context.user_data.get("mt_items", [])
+
+    if not all_items:
+        await query.edit_message_text("⚠️ Данные устарели. Запусти /my_task заново.")
+        return
+
+    per_page = MY_TASK_PER_PAGE
+    total = len(all_items)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, min(page, total_pages))
+
+    start = (page - 1) * per_page
+    page_items = all_items[start:start + per_page]
+
+    text, markup = _build_my_task_page(page_items, page, total)
+    await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
+
 
 
 # =========================
@@ -4998,6 +5065,8 @@ def main():
     app.add_handler(CallbackQueryHandler(leaderboard_project_callback, pattern="^lb_proj:"))
     app.add_handler(CommandHandler("leaderboard_project", leaderboard_project))
     app.add_handler(CommandHandler("my_task", my_task))
+    app.add_handler(CallbackQueryHandler(my_task_page_callback, pattern="^mt_page:"))
+    app.add_handler(CallbackQueryHandler(lambda u, c: u.callback_query.answer() if u.callback_query else None, pattern="^mt_noop$"))
     app.add_handler(CallbackQueryHandler(submit_task_callback, pattern="^submit_select:"))
     app.add_handler(CommandHandler("submit_task", submit_task))
     app.add_handler(get_task_done_handler())
