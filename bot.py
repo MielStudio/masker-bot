@@ -657,11 +657,6 @@ def build_user_bot_commands(user_id: int) -> list[BotCommand]:
         ])
     
     if has_permission(user_id, "manage_users"):
-        commands.extend([
-            "/set_user_status — изменить статус участника",
-        ])
-    
-    if has_permission(user_id, "manage_users"):
         commands.append(BotCommand("set_user_status", "Изменить статус участника"))
 
     if has_permission(user_id, "view_admin_reports"):
@@ -2333,7 +2328,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/block_task — заблокировать задачу",
             "/unblock_task — разблокировать задачу",
             "/set_deadline — изменить дедлайн задачи",
-            "/edit_task <ID> <поле> <значение> — изменить поле задачи",
+            "/edit_task [ID] [поле] [значение] — изменить поле задачи",
             "/run_overdue — проверить просрочки",
             "/overdue_tasks — показать просроченные задачи",
             "/add_checkitem — добавить пункт чеклиста",
