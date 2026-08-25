@@ -636,6 +636,7 @@ def build_user_bot_commands(user_id: int) -> list[BotCommand]:
             BotCommand("block_task", "Заблокировать задачу"),
             BotCommand("unblock_task", "Разблокировать задачу"),
             BotCommand("set_deadline", "Изменить дедлайн"),
+            BotCommand("edit_task", "Изменить поле задачи"),
             BotCommand("add_checkitem", "Добавить пункт чеклиста"),
             BotCommand("delete_checkitem", "Удалить пункт чеклиста"),
             BotCommand("run_overdue", "Проверить просрочки"),
@@ -747,6 +748,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/block_task — заблокировать задачу",
             "/unblock_task — разблокировать задачу",
             "/set_deadline — изменить дедлайн",
+            "/edit_task — изменить поле задачи (название, приоритет и т.д.)",
             "/run_overdue — проверить просроченные задачи",
             "/overdue_tasks — показать просрочки",
             "/add_checkitem — добавить чеклист",
@@ -2331,6 +2333,7 @@ async def admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/block_task — заблокировать задачу",
             "/unblock_task — разблокировать задачу",
             "/set_deadline — изменить дедлайн задачи",
+            "/edit_task <ID> <поле> <значение> — изменить поле задачи",
             "/run_overdue — проверить просрочки",
             "/overdue_tasks — показать просроченные задачи",
             "/add_checkitem — добавить пункт чеклиста",
@@ -3421,6 +3424,256 @@ async def set_deadline(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception:
             pass
+
+EDIT_TASK_FIELDS = {
+    "title": "Название",
+    "description": "Описание",
+    "priority": "Приоритет",
+    "category": "Категория",
+    "role": "Роль",
+    "project": "Проект",
+    "max_assignees": "Макс. исполнителей",
+    "estimated_days": "Оценка (дни)",
+    "review_required": "Проверка нужна",
+    "j": "J value",
+    "c": "C value",
+    "t": "T value",
+}
+
+EDIT_TASK_USAGE = (
+    "⚠️ Используй: /edit_task &lt;ID задачи&gt; &lt;поле&gt; &lt;значение&gt;\n\n"
+    "Доступные поля:\n"
+    "• title &lt;текст&gt;\n"
+    "• description &lt;текст или \"-\" чтобы очистить&gt;\n"
+    "• priority &lt;low|medium|high|critical&gt;\n"
+    "• category &lt;ID категории&gt;\n"
+    "• role &lt;ID роли, 0 — снять роль&gt;\n"
+    "• project &lt;ID проекта&gt;\n"
+    "• max_assignees &lt;число&gt;\n"
+    "• estimated_days &lt;число дней&gt;\n"
+    "• review_required &lt;yes|no&gt;\n"
+    "• j / c / t &lt;число&gt;\n\n"
+    "Примеры:\n"
+    "/edit_task 12 title Новое название задачи\n"
+    "/edit_task 12 priority high\n"
+    "/edit_task 12 description -"
+)
+
+
+async def edit_task_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_user_membership(update, context):
+        return
+    if not update.effective_user or not has_permission(update.effective_user.id, "manage_tasks"):
+        await safe_reply(update, context, "⚠️ У тебя нет прав для этой команды.")
+        return
+
+    if not update.message or not update.message.text:
+        return
+
+    # maxsplit=3 preserves newlines/spaces inside the value (e.g. multi-line description)
+    parts = update.message.text.split(maxsplit=3)
+    if len(parts) < 3 or not parts[1].isdigit() or parts[2].lower() not in EDIT_TASK_FIELDS:
+        await safe_reply(update, context, EDIT_TASK_USAGE, parse_mode="HTML")
+        return
+
+    task_id = int(parts[1])
+    field = parts[2].lower()
+    raw_value = parts[3].strip() if len(parts) > 3 else ""
+
+    def _get(task_service: TaskService):
+        return task_service.get_task_by_id(task_id)
+
+    task = with_task_service(_get)
+    if not task:
+        await safe_reply(update, context, f"❌ Задача #{task_id} не найдена.")
+        return
+
+    update_kwargs: dict = {}
+    old_display = None
+    new_display = None
+    history_field = field
+
+    if field == "title":
+        if not raw_value:
+            await safe_reply(update, context, "⚠️ Название не может быть пустым.")
+            return
+        old_display = task.title
+        new_display = raw_value
+        update_kwargs["title"] = raw_value
+
+    elif field == "description":
+        value = "" if raw_value == "-" else raw_value
+        old_display = task.description or "—"
+        new_display = value or "—"
+        update_kwargs["description"] = value
+
+    elif field == "priority":
+        value = raw_value.lower()
+        if value not in PRIORITY_MULTIPLIERS:
+            await safe_reply(update, context, "⚠️ Допустимые значения: low / medium / high / critical")
+            return
+        old_display = task.priority
+        new_display = value
+        update_kwargs["priority"] = value
+
+    elif field == "category":
+        if not raw_value.isdigit():
+            await safe_reply(update, context, "⚠️ Введи числовой ID категории.")
+            return
+        category_id = int(raw_value)
+
+        def _cat(task_service: TaskService):
+            return task_service.get_task_category_by_id(category_id)
+
+        category = with_task_service(_cat)
+        if not category:
+            await safe_reply(update, context, f"❌ Категория #{category_id} не найдена.")
+            return
+        old_display = task.category.title if task.category else "—"
+        new_display = category.title
+        update_kwargs["category_id"] = category.id
+
+    elif field == "role":
+        if raw_value.lower() in {"0", "none", "нет"}:
+            old_display = task.required_work_role.title if task.required_work_role else "—"
+            new_display = "—"
+            update_kwargs["required_work_role_id"] = None
+        else:
+            if not raw_value.isdigit():
+                await safe_reply(update, context, "⚠️ Введи числовой ID роли (или 0, чтобы снять роль).")
+                return
+            role_id = int(raw_value)
+
+            def _role(task_service: TaskService):
+                return task_service.get_work_role_by_id(role_id)
+
+            role = with_task_service(_role)
+            if not role:
+                await safe_reply(update, context, f"❌ Роль #{role_id} не найдена.")
+                return
+            old_display = task.required_work_role.title if task.required_work_role else "—"
+            new_display = role.title
+            update_kwargs["required_work_role_id"] = role.id
+
+    elif field == "project":
+        if not raw_value.isdigit():
+            await safe_reply(update, context, "⚠️ Введи числовой ID проекта.")
+            return
+        project_id = int(raw_value)
+
+        def _proj(task_service: TaskService):
+            return task_service.get_project_by_id(project_id)
+
+        project = with_task_service(_proj)
+        if not project:
+            await safe_reply(update, context, f"❌ Проект #{project_id} не найден.")
+            return
+        old_display = task.project.title if task.project else "—"
+        new_display = project.title
+        update_kwargs["project_id"] = project.id
+
+    elif field == "max_assignees":
+        if not raw_value.isdigit() or int(raw_value) < 1:
+            await safe_reply(update, context, "⚠️ Введи целое число не меньше 1.")
+            return
+        old_display = str(task.max_assignees)
+        new_display = raw_value
+        update_kwargs["max_assignees"] = int(raw_value)
+
+    elif field == "estimated_days":
+        if not raw_value.isdigit() or int(raw_value) < 1:
+            await safe_reply(update, context, "⚠️ Введи целое число дней не меньше 1.")
+            return
+        old_display = str(task.estimated_days) if task.estimated_days else "—"
+        new_display = raw_value
+        update_kwargs["estimated_days"] = int(raw_value)
+
+    elif field == "review_required":
+        value = raw_value.lower()
+        if value not in {"yes", "no", "y", "n"}:
+            await safe_reply(update, context, "⚠️ Напиши yes или no.")
+            return
+        bool_value = value in {"yes", "y"}
+        old_display = "yes" if task.review_required else "no"
+        new_display = "yes" if bool_value else "no"
+        update_kwargs["review_required"] = bool_value
+
+    elif field in {"j", "c", "t"}:
+        bounds = {
+            "j": (J_VALUE_MIN, J_VALUE_MAX, "j_value"),
+            "c": (C_VALUE_MIN, C_VALUE_MAX, "c_value"),
+            "t": (T_VALUE_MIN, T_VALUE_MAX, "t_value"),
+        }
+        min_v, max_v, attr = bounds[field]
+        value, error = parse_ranged_int(raw_value, min_v, max_v, field.upper())
+        if error:
+            await safe_reply(update, context, error)
+            return
+        old_display = str(getattr(task, attr) or 0)
+        new_display = str(value)
+        update_kwargs[attr] = value
+        history_field = attr
+
+    else:
+        await safe_reply(update, context, EDIT_TASK_USAGE, parse_mode="HTML")
+        return
+
+    actor_db_id = get_internal_user_id_by_tg(update.effective_user.id)
+    task_title_before = task.title
+
+    def _update(task_service: TaskService):
+        return task_service.update_task_fields(task_id, **update_kwargs)
+
+    updated = with_task_service(_update)
+    if not updated:
+        await safe_reply(update, context, f"❌ Не удалось изменить задачу #{task_id}.")
+        return
+
+    def _log(log_service: LogService):
+        log_service.log_audit(
+            actor_user_id=actor_db_id,
+            action_type="edit_task",
+            entity_type="task",
+            entity_id=task_id,
+            payload={"field": history_field, "old": old_display, "new": new_display},
+        )
+        log_service.log_task_history(
+            task_id=task_id,
+            actor_user_id=actor_db_id,
+            action_type="field_changed",
+            old_value=f"{history_field}: {old_display}",
+            new_value=f"{history_field}: {new_display}",
+            note=f"Админ изменил поле {history_field}",
+        )
+
+    with_log_service(_log)
+
+    field_label = EDIT_TASK_FIELDS.get(field, field)
+    await safe_reply(
+        update,
+        context,
+        f"✏️ Задача #{task_id} обновлена.\n{field_label}: {old_display} → {new_display}",
+    )
+
+    active_links = [a for a in getattr(updated, "assignees", []) if getattr(a, "is_active", False)]
+    for link in active_links:
+        user = getattr(link, "user", None)
+        if not user:
+            continue
+        try:
+            await context.bot.send_message(
+                chat_id=user.telegram_user_id,
+                text=(
+                    f"✏️ <b>Задача обновлена</b>\n\n"
+                    f"🆔 #{task_id}\n"
+                    f"🧩 <b>{html.escape(task_title_before)}</b>\n"
+                    f"{html.escape(field_label)}: {html.escape(str(old_display))} → {html.escape(str(new_display))}"
+                ),
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
 
 async def run_overdue_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_user_membership(update, context):
@@ -4631,6 +4884,7 @@ def main():
     app.add_handler(get_unblock_task_handler())
     app.add_handler(CommandHandler("set_user_status", set_user_status))
     app.add_handler(CommandHandler("set_deadline", set_deadline))
+    app.add_handler(CommandHandler("edit_task", edit_task_command))
     app.add_handler(CommandHandler("run_overdue", run_overdue_now))
     app.add_handler(CommandHandler("overdue_tasks", show_overdue))
     app.add_handler(CommandHandler("run_idle_check", run_idle_check_now))

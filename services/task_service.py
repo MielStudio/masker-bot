@@ -360,6 +360,9 @@ class TaskService:
     
     def set_deadline(self, task_id: int, deadline_at: datetime | None):
         return self.task_repo.set_deadline(task_id, deadline_at)
+
+    def update_task_fields(self, task_id: int, **fields):
+        return self.task_repo.update_task_fields(task_id, **fields)
     
     def mark_overdue_tasks(self, now: datetime):
         tasks = self.task_repo.list_overdue_candidates(now)

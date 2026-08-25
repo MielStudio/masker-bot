@@ -290,6 +290,21 @@ class TaskRepository:
         self.db.refresh(task)
         return task
     
+    def update_task_fields(self, task_id: int, **fields) -> Task | None:
+        """Generic partial update for editable task attributes.
+        Only known Task columns should be passed in via `fields`."""
+        task = self.get_by_id(task_id)
+        if not task:
+            return None
+
+        for key, value in fields.items():
+            setattr(task, key, value)
+
+        task.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(task)
+        return task
+
     def set_deadline(self, task_id: int, deadline_at: datetime | None) -> Task | None:
         task = self.get_by_id(task_id)
         if not task:
