@@ -610,6 +610,7 @@ def build_user_bot_commands(user_id: int) -> list[BotCommand]:
     commands = [
         BotCommand("start", "Моё приветствие"),
         BotCommand("help", "Все доступные команды"),
+        BotCommand("cancel", "Отменить текущее действие"),
         BotCommand("upcoming_events", "Посмотреть грядущие события"),
         BotCommand("my_points", "Увидеть свои баллы"),
         BotCommand("leaderboard", "Общий рейтинг"),
@@ -714,6 +715,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "",
         "/start — запустить бота",
         "/help — показать список команд",
+        "/cancel — отменить текущее действие (мастер задачи, назначение и т.д.)",
         "/upcoming_events — ближайшие события",
         "/my_points — мои баллы",
         "/leaderboard — общий рейтинг участников",
@@ -1847,6 +1849,11 @@ async def confirm_task_callback(update: Update, context: ContextTypes.DEFAULT_TY
     return ConversationHandler.END
 
 
+async def get_task_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await safe_reply(update, context, "❌ Выбор задачи отменён.", markup=ReplyKeyboardRemove())
+    return ConversationHandler.END
+
 def get_task_handler():
     return ConversationHandler(
         entry_points=[
@@ -1858,7 +1865,7 @@ def get_task_handler():
             SELECT_TASK: [CallbackQueryHandler(task_catalog_callback)],
             CONFIRM: [CallbackQueryHandler(confirm_task_callback)],
         },
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", get_task_cancel)],
         allow_reentry=True,
     )
 
@@ -3037,13 +3044,17 @@ async def block_task_select_callback(update: Update, context: ContextTypes.DEFAU
     return ConversationHandler.END
 
 
+async def block_task_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await safe_reply(update, context, "❌ Блокировка задачи отменена.")
+    return ConversationHandler.END
+
 def get_block_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("block_task", block_task_entry)],
         states={
             BLOCK_SELECT_TASK: [CallbackQueryHandler(block_task_select_callback, pattern="^bt_task:")],
         },
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", block_task_cancel)],
         allow_reentry=True,
     )
 
@@ -3155,13 +3166,17 @@ async def unblock_task_select_callback(update: Update, context: ContextTypes.DEF
     return ConversationHandler.END
 
 
+async def unblock_task_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await safe_reply(update, context, "❌ Разблокировка задачи отменена.")
+    return ConversationHandler.END
+
 def get_unblock_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("unblock_task", unblock_task_entry)],
         states={
             UNBLOCK_SELECT_TASK: [CallbackQueryHandler(unblock_task_select_callback, pattern="^ubt_task:")],
         },
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", unblock_task_cancel)],
         allow_reentry=True,
     )
 
@@ -3384,6 +3399,11 @@ async def unassign_task_select_user_callback(update: Update, context: ContextTyp
     return ConversationHandler.END
 
 
+async def unassign_task_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("uat_task_id", None)
+    await safe_reply(update, context, "❌ Снятие с задачи отменено.")
+    return ConversationHandler.END
+
 def get_unassign_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("unassign_task", unassign_task_entry)],
@@ -3391,7 +3411,7 @@ def get_unassign_task_handler():
             UNASSIGN_SELECT_TASK: [CallbackQueryHandler(unassign_task_select_task_callback, pattern="^uat_task:")],
             UNASSIGN_SELECT_USER: [CallbackQueryHandler(unassign_task_select_user_callback, pattern="^uat_user:")],
         },
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", unassign_task_cancel)],
         allow_reentry=True,
     )
 
@@ -4169,6 +4189,11 @@ async def assign_task_select_user_callback(update: Update, context: ContextTypes
     context.user_data.pop("at_task_id", None)
     return ConversationHandler.END
 
+async def assign_task_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("at_task_id", None)
+    await safe_reply(update, context, "❌ Назначение задачи отменено.")
+    return ConversationHandler.END
+
 def get_assign_task_handler():
     return ConversationHandler(
         entry_points=[CommandHandler("assign_task", assign_task_entry)],
@@ -4176,7 +4201,7 @@ def get_assign_task_handler():
             ASSIGN_SELECT_TASK: [CallbackQueryHandler(assign_task_select_task_callback, pattern="^at_task:")],
             ASSIGN_SELECT_USER: [CallbackQueryHandler(assign_task_select_user_callback, pattern="^at_user:")],
         },
-        fallbacks=[],
+        fallbacks=[CommandHandler("cancel", assign_task_cancel)],
         allow_reentry=True,
     )
 
@@ -4882,6 +4907,7 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("start", "Моё приветствие"),
         BotCommand("help", "Все доступные команды"),
+        BotCommand("cancel", "Отменить текущее действие"),
         BotCommand("upcoming_events", "Посмотреть грядущие события"),
         BotCommand("my_points", "Увидеть свои баллы"),
         BotCommand("my_task", "Посмотреть свои задачи"),
